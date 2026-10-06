@@ -239,6 +239,53 @@ public class ParallelStreamTests
         await Assert.That(parallel).IsEqualTo(sequential);
     }
 
+    [Test]
+    [Arguments(1)]
+    [Arguments(4)]
+    public async Task CorruptChunk_ReadingAgainKeepsFailing(int threads)
+    {
+        // A caller that catches the error and reads on must not silently skip the bad chunk
+        byte[] input = Repeat(TestData.Load("json_api.json"), 1_000_000);
+        byte[] compressed = await Compress(input, 1, WritePattern.OneWrite);
+
+        int position = StreamFormatHeaderLength;
+        for (int chunk = 0; chunk < 5; chunk++)
+        {
+            position += 4 + (compressed[position + 1] | (compressed[position + 2] << 8) | (compressed[position + 3] << 16));
+        }
+
+        compressed[position + 4] ^= 0xFF;
+
+        using SnappyStream decompressor = threads == 1
+            ? new SnappyStream(new MemoryStream(compressed), CompressionMode.Decompress)
+            : new SnappyStream(new MemoryStream(compressed), CompressionMode.Decompress, leaveOpen: false, Options(threads));
+
+        byte[] buffer = new byte[100_000];
+        int failures = 0;
+        long returned = 0;
+        for (int attempt = 0; attempt < 50; attempt++)
+        {
+            try
+            {
+                int read = decompressor.Read(buffer);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                returned += read;
+            }
+            catch (InvalidDataException)
+            {
+                failures++;
+            }
+        }
+
+        // Nothing after the bad chunk is ever returned, and every read after the first failure fails again
+        await Assert.That(returned).IsLessThanOrEqualTo(5 * 65536);
+        await Assert.That(failures).IsGreaterThan(40);
+    }
+
     private const int StreamFormatHeaderLength = 10;
 
     private static int ReadUntilError(byte[] compressed, int threads, int readSize)
