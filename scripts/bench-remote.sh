@@ -37,6 +37,9 @@ fi
 
 ssh -o BatchMode=yes "$HOST" bash -s -- "$FRAMEWORK" "$CLASSES" "$CORES" "$JOB" "${LABEL:-_}" "$NOSYNC" "${BENCH_ENV:-_}" "$REMOTE_DIR" "$EXTRA_ARGS" <<'REMOTE'
 set -euo pipefail
+# Core sets for multi-threaded benchmark jobs, one per job (16 physical cores each)
+PARALLEL_CORE_SETS=(33-48 0-15 16-31)
+PARALLEL_JOB=0
 FRAMEWORK="$1"; CLASSES="$2"; CORES="$3"; JOB="$4"; LABEL="${5#_}"; NOSYNC="$6"; BENCH_ENV="${7#_}"; REMOTE_DIR="$8"; EXTRA_ARGS="${*:9}"
 export PATH="$HOME/.dotnet:$PATH" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 eval cd "$REMOTE_DIR"
@@ -68,6 +71,7 @@ for cls in "${CLS[@]}"; do
     SmallBlock) for f in html fireworks.jpeg; do JOBS+=("SmallBlockBenchmarks|$f"); done ;;
     Corpus)     JOBS+=("CorpusBenchmarks|") ;;
     Crc)        JOBS+=("Crc32CBenchmarks|") ;;
+    Parallel)   for f in json_api.json html_x_4 urls.10K; do JOBS+=("ParallelBenchmarks|$f"); done ;;
     *)          JOBS+=("$cls|") ;;
   esac
 done
@@ -84,6 +88,11 @@ i=0
 for j in "${JOBS[@]}"; do
   cls="${j%%|*}"; file="${j#*|}"
   core="${CORE_LIST[$(( i % ${#CORE_LIST[@]} ))]}"
+  # Multi-threaded benchmarks get a core range instead of a single core
+  if [[ "$cls" == ParallelBenchmarks ]]; then
+    core="${PARALLEL_CORE_SETS[$(( PARALLEL_JOB % ${#PARALLEL_CORE_SETS[@]} ))]}"
+    PARALLEL_JOB=$((PARALLEL_JOB + 1))
+  fi
   name="$cls${file:+-$file}"
   ( env $BENCH_ENV BENCH_FILES="$file" taskset -c "$core" dotnet "$DLL" --filter "SnappySimd.Benchmarks.$cls.*" \
       --inProcess --job "$JOB" --artifacts "$RUN/$name" --exporters github $EXTRA_ARGS > "$RUN/$name.log" 2>&1 \

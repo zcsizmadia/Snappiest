@@ -81,6 +81,27 @@ using var decompressor = new SnappyStream(compressedStream, CompressionMode.Deco
 decompressor.CopyTo(destination);
 ```
 
+### Parallel compression and decompression (opt-in)
+
+Snappy compresses 64KB fragments (blocks) and chunks (streams) independently, so large inputs can use several
+threads. Pass `SnappyParallelOptions` to the extra overloads; the Snappier-compatible members never use more than the
+calling thread. The output is **byte-for-byte identical** to the single-threaded output, so anything that reads
+Snappy (Snappier, google/snappy, snappy-java, ...) reads it.
+
+```csharp
+var options = new SnappyParallelOptions { MaxDegreeOfParallelism = 8 }; // default: all processors
+
+byte[] compressed = Snappy.CompressToArray(largeData, options);       // blocks: compression
+int length = Snappy.Compress(largeData, outputBuffer, options);
+
+using var writer = new SnappyStream(file, CompressionMode.Compress, leaveOpen: false, options);  // streams:
+using var reader = new SnappyStream(file, CompressionMode.Decompress, leaveOpen: false, options); // both ways
+```
+
+Inputs below `MinimumParallelLength` (default 256KB) are processed on the calling thread. Raw block decompression is
+always single-threaded: other encoders may emit copies that cross fragment boundaries. Neither Snappier nor
+google/snappy has a parallel mode.
+
 ## How it is fast
 
 - **Decompression** is a port of the branchless decoder from google/snappy 1.3: tags decode through a lookup table

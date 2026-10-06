@@ -165,12 +165,96 @@ public static class Snappy
     /// </summary>
     /// <param name="input">Data to compress.</param>
     /// <remarks>
-    /// The resulting byte array is allocated on the heap. If possible, <see cref="CompressToMemory"/> should
+    /// The resulting byte array is allocated on the heap. If possible, <see cref="CompressToMemory(ReadOnlySpan{byte})"/> should
     /// be used instead since it uses a shared buffer pool.
     /// </remarks>
     public static byte[] CompressToArray(ReadOnlySpan<byte> input)
     {
         using IMemoryOwner<byte> buffer = CompressToMemory(input);
+        return buffer.Memory.Span.ToArray();
+    }
+
+    /// <summary>
+    /// Compress a block of Snappy data, using several threads for large inputs.
+    /// </summary>
+    /// <param name="input">Data to compress.</param>
+    /// <param name="output">Buffer to receive the compressed data.</param>
+    /// <param name="options">Threading options.</param>
+    /// <returns>Number of bytes written to <paramref name="output"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="ArgumentException">Output buffer is too small.</exception>
+    /// <exception cref="InvalidOperationException">Input and output spans must not overlap.</exception>
+    /// <remarks>
+    /// The output is identical to <see cref="Compress(ReadOnlySpan{byte}, Span{byte})"/>: 64KB fragments are
+    /// compressed independently on up to <see cref="SnappyParallelOptions.MaxDegreeOfParallelism"/> threads.
+    /// </remarks>
+    public static int Compress(ReadOnlySpan<byte> input, Span<byte> output, SnappyParallelOptions options)
+    {
+        if (!TryCompress(input, output, out int bytesWritten, options))
+        {
+            ThrowHelper.ThrowArgumentExceptionInsufficientOutputBuffer(nameof(output));
+        }
+
+        return bytesWritten;
+    }
+
+    /// <summary>
+    /// Attempt to compress the input data into the output buffer, using several threads for large inputs.
+    /// </summary>
+    /// <param name="input">Data to compress.</param>
+    /// <param name="output">Buffer to receive the compressed data.</param>
+    /// <param name="bytesWritten">Number of bytes written to the <paramref name="output"/>.</param>
+    /// <param name="options">Threading options.</param>
+    /// <returns><c>true</c> if the compression was successful, <c>false</c> if the output buffer is too small.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    /// <exception cref="InvalidOperationException">Input and output spans must not overlap.</exception>
+    public static bool TryCompress(ReadOnlySpan<byte> input, Span<byte> output, out int bytesWritten, SnappyParallelOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        if (output.IsEmpty)
+        {
+            bytesWritten = 0;
+            return false;
+        }
+
+        if (input.Overlaps(output))
+        {
+            ThrowHelper.ThrowInvalidOperationException("Input and output spans must not overlap.");
+        }
+
+        return ParallelBlockCompressor.TryCompress(input, output, options, out bytesWritten);
+    }
+
+    /// <summary>
+    /// Compress a block of Snappy data, using several threads for large inputs.
+    /// </summary>
+    /// <param name="input">Data to compress.</param>
+    /// <param name="options">Threading options.</param>
+    /// <returns>An <see cref="IMemoryOwner{T}"/> with the compressed data. The caller is responsible for disposing this object.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    public static IMemoryOwner<byte> CompressToMemory(ReadOnlySpan<byte> input, SnappyParallelOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(GetMaxCompressedLength(input.Length));
+
+        // Cannot fail: the buffer has the maximum compressed length
+        ParallelBlockCompressor.TryCompress(input, buffer, options, out int length);
+
+        return new PooledMemoryOwner(buffer, length);
+    }
+
+    /// <summary>
+    /// Compress a block of Snappy data, using several threads for large inputs.
+    /// </summary>
+    /// <param name="input">Data to compress.</param>
+    /// <param name="options">Threading options.</param>
+    /// <returns>The compressed data.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options"/> is null.</exception>
+    public static byte[] CompressToArray(ReadOnlySpan<byte> input, SnappyParallelOptions options)
+    {
+        using IMemoryOwner<byte> buffer = CompressToMemory(input, options);
         return buffer.Memory.Span.ToArray();
     }
 
