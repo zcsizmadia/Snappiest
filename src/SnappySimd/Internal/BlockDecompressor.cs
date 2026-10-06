@@ -173,6 +173,13 @@ internal static unsafe class BlockDecompressor
     [SkipLocalsInit]
     internal static bool DecompressTags(byte* ip, byte* ipEnd, byte* opBase, byte* opEnd)
     {
+        // Blocks too small for the fast loop get their own method: with dynamic PGO, a method's profile decides how
+        // its code is laid out, and a stream of tiny blocks would otherwise mark the fast loop as cold here
+        if (ipEnd - ip <= BranchlessInputMargin)
+        {
+            return DecompressSmall(ip, ipEnd, opBase, opEnd);
+        }
+
         byte* op = opBase;
 
         // The fast loop may write SlopBytes past its position, so it must stop SlopBytes - 1 short of the end
@@ -192,7 +199,9 @@ internal static unsafe class BlockDecompressor
                 break;
             }
 
-            // Slow path: one tag, fully bounds checked
+            // Slow path: one tag, fully bounds checked. Written out here rather than calling DecodeTagChecked: with
+            // ip and op passed by reference to both it and the fast loop, the JIT sometimes stops keeping them in
+            // registers (measured 40% slower on large blocks).
             nuint tag = *ip++;
             nuint length;
             nuint offset;
@@ -267,43 +276,151 @@ internal static unsafe class BlockDecompressor
                 return false;
             }
 
-            if (op < opLimitMinSlop)
-            {
-                // Room for a 64 byte over-copy
-                if (offset >= length)
-                {
-                    SimdCopy.Copy64(op - offset, op);
-                }
-                else
-                {
-                    SimdCopy.Copy64BytesWithPatternExtension(op, offset);
-                }
-            }
-            else
-            {
-                // Near the end of the output: no over-writing. Whole 16 byte blocks are safe when the source is at
-                // least 16 bytes back (each block reads only finished output); the rest goes byte by byte.
-                byte* src = op - offset;
-                byte* end = op + length;
-                byte* dst = op;
-                if (offset >= 16)
-                {
-                    for (; end - dst >= 16; dst += 16, src += 16)
-                    {
-                        SimdCopy.Copy16(src, dst);
-                    }
-                }
-
-                for (; dst < end; dst++, src++)
-                {
-                    *dst = *src;
-                }
-            }
-
+            CopyWithinOutput(op, offset, length, opLimitMinSlop);
             op += length;
         }
 
         return op == opEnd;
+    }
+
+    /// <summary>Copies <paramref name="length"/> bytes from <paramref name="offset"/> back, over-copying only when there is room.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void CopyWithinOutput(byte* op, nuint offset, nuint length, byte* opLimitMinSlop)
+    {
+        if (op < opLimitMinSlop)
+        {
+            // Room for a 64 byte over-copy
+            if (offset >= length)
+            {
+                SimdCopy.Copy64(op - offset, op);
+            }
+            else
+            {
+                SimdCopy.Copy64BytesWithPatternExtension(op, offset);
+            }
+        }
+        else
+        {
+            // Near the end of the output: no over-writing. Whole 16 byte blocks are safe when the source is at
+            // least 16 bytes back (each block reads only finished output); the rest goes byte by byte.
+            byte* src = op - offset;
+            byte* end = op + length;
+            byte* dst = op;
+            if (offset >= 16)
+            {
+                for (; end - dst >= 16; dst += 16, src += 16)
+                {
+                    SimdCopy.Copy16(src, dst);
+                }
+            }
+
+            for (; dst < end; dst++, src++)
+            {
+                *dst = *src;
+            }
+        }
+    }
+
+    /// <summary>Decodes a block whose tags are too short for the fast loop, one bounds-checked tag at a time.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool DecompressSmall(byte* ip, byte* ipEnd, byte* opBase, byte* opEnd)
+    {
+        byte* op = opBase;
+        byte* opLimitMinSlop = opEnd - Math.Min(SlopBytes - 1, (nint)(opEnd - opBase));
+
+        while (ip < ipEnd)
+        {
+            if (!DecodeTagChecked(ref ip, ipEnd, ref op, opBase, opEnd, opLimitMinSlop))
+            {
+                return false;
+            }
+        }
+
+        return op == opEnd;
+    }
+
+    /// <summary>Decodes one tag with full bounds checks.</summary>
+    /// <returns><c>false</c> if the input is corrupt.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool DecodeTagChecked(ref byte* ip, byte* ipEnd, ref byte* op, byte* opBase, byte* opEnd, byte* opLimitMinSlop)
+    {
+        nuint tag = *ip++;
+        nuint length;
+        nuint offset;
+        switch (tag & 3)
+        {
+            case 0:
+                length = (tag >> 2) + 1;
+                if (length > 60)
+                {
+                    int count = (int)length - 60;
+                    if (ipEnd - ip < count)
+                    {
+                        return false;
+                    }
+
+                    ulong longLength = ReadLittleEndian(ref *ip, count) + 1UL;
+                    ip += count;
+                    if (longLength > (ulong)(ipEnd - ip))
+                    {
+                        return false;
+                    }
+
+                    length = (nuint)longLength;
+                }
+
+                if ((nuint)(ipEnd - ip) < length || (nuint)(opEnd - op) < length)
+                {
+                    return false;
+                }
+
+                Buffer.MemoryCopy(ip, op, length, length);
+                ip += length;
+                op += length;
+                return true;
+
+            case 1:
+                if (ip >= ipEnd)
+                {
+                    return false;
+                }
+
+                length = ((tag >> 2) & 7) + 4;
+                offset = ((tag & 0xE0) << 3) | *ip;
+                ip += 1;
+                break;
+
+            case 2:
+                if (ipEnd - ip < 2)
+                {
+                    return false;
+                }
+
+                length = (tag >> 2) + 1;
+                offset = Unsafe.ReadUnaligned<ushort>(ip);
+                ip += 2;
+                break;
+
+            default:
+                if (ipEnd - ip < 4)
+                {
+                    return false;
+                }
+
+                length = (tag >> 2) + 1;
+                offset = Unsafe.ReadUnaligned<uint>(ip);
+                ip += 4;
+                break;
+        }
+
+        if (offset - 1 >= (nuint)(op - opBase) || length > (nuint)(opEnd - op))
+        {
+            return false;
+        }
+
+        CopyWithinOutput(op, offset, length, opLimitMinSlop);
+        op += length;
+        return true;
     }
 
     /// <summary>

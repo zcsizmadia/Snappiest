@@ -72,6 +72,7 @@ for cls in "${CLS[@]}"; do
     Corpus)     JOBS+=("CorpusBenchmarks|") ;;
     Crc)        JOBS+=("Crc32CBenchmarks|") ;;
     Parallel)   for f in json_api.json html_x_4 urls.10K; do JOBS+=("ParallelBenchmarks|$f"); done ;;
+    Tiering)    for w in none small large; do JOBS+=("TieringBenchmarks|$w"); done ;;
     *)          JOBS+=("$cls|") ;;
   esac
 done
@@ -94,7 +95,7 @@ for j in "${JOBS[@]}"; do
     PARALLEL_JOB=$((PARALLEL_JOB + 1))
   fi
   name="$cls${file:+-$file}"
-  ( env $BENCH_ENV BENCH_FILES="$file" taskset -c "$core" dotnet "$DLL" --filter "SnappySimd.Benchmarks.$cls.*" \
+  ( env $BENCH_ENV BENCH_FILES="$file" BENCH_WARMUP="$file" taskset -c "$core" dotnet "$DLL" --filter "SnappySimd.Benchmarks.$cls.*" \
       --inProcess --job "$JOB" --artifacts "$RUN/$name" --exporters github $EXTRA_ARGS > "$RUN/$name.log" 2>&1 \
     || echo "FAILED: $name (see $RUN/$name.log)" ) &
   i=$((i + 1))

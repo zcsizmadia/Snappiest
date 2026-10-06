@@ -48,6 +48,12 @@ The `dotnet` CLI is at `C:\Program Files\dotnet\dotnet.exe` (not on PATH in Clau
   decompression went from 16% faster than Snappier to 11% slower after a few 64 byte calls). Check entry conditions
   in the caller so the loop method is only called when it will run. Benchmark mixed sizes in one process
   (SmallBlockBenchmarks does) to catch this; single-size benchmarks hide it.
+- Blocks whose compressed tags are too short for the fast loop (<= 130 bytes) go to their own `DecompressSmall`, so
+  streams of tiny messages get their own profile (64 B: 48 -> 40 ns). Don't route the main loop's slow path through
+  a helper taking `ref ip/op`: next to the fast loop (also `ref`) the JIT sometimes stopped enregistering them and
+  large blocks got 40% slower. `TieringBenchmarks` (runner class `Tiering`) measures decoding after large-only,
+  tiny-only and no warmup, each in its own process. 256 B-4 KB blocks still vary ~8-25% with that history; that is
+  dynamic PGO working as designed (it is worth 5-12% on large inputs).
 - Check codegen with `DOTNET_JitDisasm=<method> DOTNET_JitStdOutFile=/tmp/x.asm` on the remote host and look for
   the `Tier1` listing.
 - Over-copying (16/32/64-byte vector stores past the end) is fine only inside the slop the callers guarantee; the
