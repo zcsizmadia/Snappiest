@@ -46,6 +46,60 @@ public class Crc32CTests
     }
 
     [Test]
+    public async Task Folding_MatchesSoftware_AllLengthsAndStates()
+    {
+        if (!Crc32C.IsFoldingAccelerated)
+        {
+            return;
+        }
+
+        byte[] data = new byte[70000];
+        new Random(2).NextBytes(data);
+        int mismatches = 0;
+
+        // Every length around the 128 byte threshold and the 64/16 byte loop boundaries, plus chunk sizes
+        IEnumerable<int> lengths = Enumerable.Range(0, 600).Concat([1023, 1024, 1025, 4095, 4096, 65535, 65536, 65537, data.Length]);
+        foreach (int length in lengths)
+        {
+            foreach (uint state in new[] { 0u, ~0u, 0x12345678u })
+            {
+                ReadOnlySpan<byte> slice = data.AsSpan(3, Math.Min(length, data.Length - 3));
+                if (Crc32C.UpdateFolding(state, slice) != Crc32C.UpdateSoftware(state, slice))
+                {
+                    mismatches++;
+                }
+            }
+        }
+
+        await Assert.That(mismatches).IsEqualTo(0);
+    }
+
+#if NET10_0_OR_GREATER
+    [Test]
+    public async Task Folding256_MatchesSoftware()
+    {
+        if (!System.Runtime.Intrinsics.X86.Pclmulqdq.V256.IsSupported || !Crc32C.IsFoldingAccelerated)
+        {
+            return;
+        }
+
+        byte[] data = new byte[70000];
+        new Random(4).NextBytes(data);
+        int mismatches = 0;
+        foreach (int length in Enumerable.Range(0, 800).Concat([4095, 4096, 65535, 65536, 65537, data.Length]))
+        {
+            ReadOnlySpan<byte> slice = data.AsSpan(0, length);
+            if (Crc32C.UpdateFolding256(0x9abcdef0, slice) != Crc32C.UpdateSoftware(0x9abcdef0, slice))
+            {
+                mismatches++;
+            }
+        }
+
+        await Assert.That(mismatches).IsEqualTo(0);
+    }
+#endif
+
+    [Test]
     public async Task Append_EqualsWhole()
     {
         byte[] data = TestData.Load("html");
