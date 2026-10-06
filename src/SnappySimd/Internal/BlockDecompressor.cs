@@ -18,6 +18,9 @@ internal static unsafe class BlockDecompressor
     // Bytes the fast loop may touch past the current position
     private const int SlopBytes = 64;
 
+    // Input the fast loop needs before it can run (two tags plus their slop)
+    private const int BranchlessInputMargin = 2 * (SlopBytes + 1);
+
     // Maximum ratio between uncompressed and compressed size: a 3 byte copy-2 tag expands to 64 bytes.
     private const int MaxExpansion = 22;
 
@@ -25,6 +28,7 @@ internal static unsafe class BlockDecompressor
     // spurious offset that keeps literals off the overlapping-copy path), and 0xFF (exceptional) for long
     // literals and copy-4.
     private static readonly short* s_lengthMinusOffset = BuildLengthMinusOffset();
+
 
     // For tests
     internal static short LengthMinusOffset(int tag) => s_lengthMinusOffset[(byte)tag];
@@ -173,7 +177,12 @@ internal static unsafe class BlockDecompressor
 
         while (true)
         {
-            DecompressBranchless(ref ip, ipEnd, ref op, opBase, opLimitMinSlop);
+            // Only enter the fast loop when it will decode at least one pair of tags: with dynamic PGO, calls that
+            // return at once would teach the JIT that the loop body is cold, which slows every later large input
+            if (ipEnd - ip > BranchlessInputMargin && op < opLimitMinSlop - SlopBytes)
+            {
+                DecompressBranchless(ref ip, ipEnd, ref op, opBase, opLimitMinSlop);
+            }
 
             if (ip >= ipEnd)
             {
@@ -269,10 +278,22 @@ internal static unsafe class BlockDecompressor
             }
             else
             {
+                // Near the end of the output: no over-writing. Whole 16 byte blocks are safe when the source is at
+                // least 16 bytes back (each block reads only finished output); the rest goes byte by byte.
                 byte* src = op - offset;
-                for (nuint i = 0; i < length; i++)
+                byte* end = op + length;
+                byte* dst = op;
+                if (offset >= 16)
                 {
-                    op[i] = src[i];
+                    for (; end - dst >= 16; dst += 16, src += 16)
+                    {
+                        SimdCopy.Copy16(src, dst);
+                    }
+                }
+
+                for (; dst < end; dst++, src++)
+                {
+                    *dst = *src;
                 }
             }
 
@@ -295,11 +316,8 @@ internal static unsafe class BlockDecompressor
         byte* ip = ipRef;
         byte* op = opRef;
 
+        // The caller checked that ipLimit - ip > BranchlessInputMargin and op < opLimitMinSlop - SlopBytes
         opLimitMinSlop -= SlopBytes;
-        if (ipLimit - ip <= 2 * (SlopBytes + 1) || op >= opLimitMinSlop)
-        {
-            return;
-        }
 
         byte* ipLimitMinSlop = ipLimit - (2 * SlopBytes) - 1;
         short* table = s_lengthMinusOffset;
@@ -312,73 +330,18 @@ internal static unsafe class BlockDecompressor
 
         nuint tag = *ip++;
 
+        // Two tags per iteration: the limits leave room for both, and checking them once per pair halves the loop
+        // overhead (as in google/snappy).
         do
         {
-            byte* oldIp = ip;
-            nint lengthMinusOffset = table[tag];
-
-            // Advance to the next tag. Both candidates are loaded before selecting, which keeps the ip dependency
-            // chain short; there is always enough input slop for the speculative loads.
-            nuint tagType = tag & 3;
-            nuint literalMask = (nuint)(((nint)tagType - 1) >> 63); // all ones for literals
-            nuint literalLength = tag >> 2;
-            nuint tagLiteral = ip[1 + literalLength];
-            nuint tagCopy = ip[tagType];
-            tag = (tagLiteral & literalMask) | (tagCopy & ~literalMask);
-            ip += 1 + (((1 + literalLength) & literalMask) | (tagType & ~literalMask));
-
-            // Offset bytes after the tag, masked by type: 0, 0xFF, 0xFFFF, 0 packed as 16 bit lanes
-            uint next = Unsafe.ReadUnaligned<uint>(oldIp);
-            nint extracted = (nint)(next & (uint)(0x0000FFFF00FF0000UL >> (int)(tagType * 16)) & 0xFFFF);
-            nint length = lengthMinusOffset & 0xFF;
-            nint lengthMinOffset = lengthMinusOffset - extracted;
-
-            if (lengthMinOffset > 0)
+            if (!DecodeTag(ref ip, ref tag, ref op, ref deferredSrc, ref deferredLength, opBase, table, safeSource)
+                || !DecodeTag(ref ip, ref tag, ref op, ref deferredSrc, ref deferredLength, opBase, table, safeSource))
             {
-                if ((length & 0x80) != 0)
-                {
-                    // Long literal or copy-4
-                    ip = oldIp;
-                    goto Exit;
-                }
-
-                // A copy whose source overlaps its destination (offset < length)
-                SimdCopy.MemCopy64(op, deferredSrc, deferredLength);
-                op += deferredLength;
-                deferredSrc = safeSource;
-                deferredLength = 0;
-
-                nuint offset = (nuint)(length - lengthMinOffset);
-                if (offset - 1 >= (nuint)(op - opBase))
-                {
-                    // Zero offset, or before the start of the output
-                    ip = oldIp;
-                    goto Exit;
-                }
-
-                SimdCopy.Copy64BytesWithPatternExtension(op, offset);
-                op += length;
-                continue;
+                break;
             }
-
-            // Copies read from earlier output, literals from the input
-            byte* opNext = op + deferredLength;
-            byte* copySrc = opNext + lengthMinOffset - length;
-            if (copySrc < opBase && tagType != 0)
-            {
-                ip = oldIp;
-                goto Exit;
-            }
-
-            byte* from = (byte*)(((nuint)oldIp & literalMask) | ((nuint)copySrc & ~literalMask));
-            SimdCopy.MemCopy64(op, deferredSrc, deferredLength);
-            op = opNext;
-            deferredSrc = from;
-            deferredLength = (nuint)length;
         }
         while (ip < ipLimitMinSlop && op + deferredLength < opLimitMinSlop);
 
-    Exit:
         ip--;
 
         if (deferredLength != 0)
@@ -389,6 +352,78 @@ internal static unsafe class BlockDecompressor
 
         ipRef = ip;
         opRef = op;
+    }
+
+    /// <summary>
+    /// Decodes one tag in the branchless loop. On entry <paramref name="ip"/> points just past <paramref name="tag"/>.
+    /// </summary>
+    /// <returns><c>false</c>, with <paramref name="ip"/> just past the tag, if the tag needs the slow path.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool DecodeTag(ref byte* ip, ref nuint tag, ref byte* op, ref byte* deferredSrc, ref nuint deferredLength,
+        byte* opBase, short* table, byte* safeSource)
+    {
+        byte* oldIp = ip;
+        nint lengthMinusOffset = table[tag];
+
+        // Advance to the next tag. Both candidates are loaded before selecting, which keeps the ip dependency
+        // chain short; there is always enough input slop for the speculative loads.
+        nuint tagType = tag & 3;
+        nuint literalMask = (nuint)(((nint)tagType - 1) >> 63); // all ones for literals
+        nuint literalLength = tag >> 2;
+        nuint tagLiteral = oldIp[1 + literalLength];
+        nuint tagCopy = oldIp[tagType];
+        tag = (tagLiteral & literalMask) | (tagCopy & ~literalMask);
+        ip = oldIp + 1 + (((1 + literalLength) & literalMask) | (tagType & ~literalMask));
+
+        // Offset bytes after the tag, masked by type: 0, 0xFF, 0xFFFF, 0 packed as 16 bit lanes
+        uint next = Unsafe.ReadUnaligned<uint>(oldIp);
+        nint extracted = (nint)(next & (uint)(0x0000FFFF00FF0000UL >> (int)(tagType * 16)) & 0xFFFF);
+        nint length = lengthMinusOffset & 0xFF;
+        nint lengthMinOffset = lengthMinusOffset - extracted;
+
+        if (lengthMinOffset > 0)
+        {
+            if ((length & 0x80) != 0)
+            {
+                // Long literal or copy-4
+                ip = oldIp;
+                return false;
+            }
+
+            // A copy whose source overlaps its destination (offset < length)
+            SimdCopy.MemCopy64(op, deferredSrc, deferredLength);
+            op += deferredLength;
+            deferredSrc = safeSource;
+            deferredLength = 0;
+
+            nuint offset = (nuint)(length - lengthMinOffset);
+            if (offset - 1 >= (nuint)(op - opBase))
+            {
+                // Zero offset, or before the start of the output
+                ip = oldIp;
+                return false;
+            }
+
+            SimdCopy.Copy64BytesWithPatternExtension(op, offset);
+            op += length;
+            return true;
+        }
+
+        // Copies read from earlier output, literals from the input
+        byte* opNext = op + deferredLength;
+        byte* copySrc = opNext + lengthMinOffset - length;
+        if (copySrc < opBase && tagType != 0)
+        {
+            ip = oldIp;
+            return false;
+        }
+
+        byte* from = (byte*)(((nuint)oldIp & literalMask) | ((nuint)copySrc & ~literalMask));
+        SimdCopy.MemCopy64(op, deferredSrc, deferredLength);
+        op = opNext;
+        deferredSrc = from;
+        deferredLength = (nuint)length;
+        return true;
     }
 
     // Reads a 1..4 byte little-endian value without touching bytes past it

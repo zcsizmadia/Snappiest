@@ -5,12 +5,13 @@
 # Usage: scripts/bench-remote.sh [host] [framework] [classes] [extra BenchmarkDotNet args...]
 #   host       default bd-au1-jz001g3v
 #   framework  net10.0 (default) or net8.0
-#   classes    comma separated: Block,Stream,SmallBlock,Corpus (default all)
+#   classes    comma separated: Block,Stream,SmallBlock,Corpus,Crc (default Block,Stream,SmallBlock,Corpus)
 # Env: BENCH_CORES   physical cores to use (default "33-63", NUMA node 1 on the EPYC host)
 #      BENCH_JOB     BenchmarkDotNet job (default "medium")
 #      BENCH_ENV     extra environment for the benchmark processes, e.g. "DOTNET_EnableAVX2=0"
 #      BENCH_LABEL   suffix for the results directory
 #      BENCH_NOSYNC  1 to skip syncing and building (when running several configurations at once)
+#      BENCH_REMOTE_DIR  remote working copy (default ~/snappysimd); use another for experiments
 set -euo pipefail
 
 HOST="${1:-bd-au1-jz001g3v}"
@@ -23,7 +24,7 @@ JOB="${BENCH_JOB:-medium}"
 BENCH_ENV="${BENCH_ENV:-}"
 LABEL="${BENCH_LABEL:-}"
 NOSYNC="${BENCH_NOSYNC:-0}"
-REMOTE_DIR='~/snappysimd'
+REMOTE_DIR="${BENCH_REMOTE_DIR:-~/snappysimd}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -34,11 +35,11 @@ tar -C "$ROOT" -czf - --exclude=.git --exclude='bin' --exclude='obj' --exclude='
   | ssh -o BatchMode=yes "$HOST" "mkdir -p $REMOTE_DIR && tar -xzf - -C $REMOTE_DIR"
 fi
 
-ssh -o BatchMode=yes "$HOST" bash -s -- "$FRAMEWORK" "$CLASSES" "$CORES" "$JOB" "${LABEL:-_}" "$NOSYNC" "${BENCH_ENV:-_}" "$EXTRA_ARGS" <<'REMOTE'
+ssh -o BatchMode=yes "$HOST" bash -s -- "$FRAMEWORK" "$CLASSES" "$CORES" "$JOB" "${LABEL:-_}" "$NOSYNC" "${BENCH_ENV:-_}" "$REMOTE_DIR" "$EXTRA_ARGS" <<'REMOTE'
 set -euo pipefail
-FRAMEWORK="$1"; CLASSES="$2"; CORES="$3"; JOB="$4"; LABEL="${5#_}"; NOSYNC="$6"; BENCH_ENV="${7#_}"; EXTRA_ARGS="${*:8}"
+FRAMEWORK="$1"; CLASSES="$2"; CORES="$3"; JOB="$4"; LABEL="${5#_}"; NOSYNC="$6"; BENCH_ENV="${7#_}"; REMOTE_DIR="$8"; EXTRA_ARGS="${*:9}"
 export PATH="$HOME/.dotnet:$PATH" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
-cd ~/snappysimd
+eval cd "$REMOTE_DIR"
 
 # net11.0 is preview: build it with the installed SDK 11 (the synced global.json pins SDK 10)
 if [[ "$FRAMEWORK" == net11.0 && "$NOSYNC" != 1 ]]; then
@@ -66,6 +67,7 @@ for cls in "${CLS[@]}"; do
     Stream)     for f in alice29.txt fireworks.jpeg html_x_4 urls.10K json_api.json events.ndjson; do JOBS+=("StreamBenchmarks|$f"); done ;;
     SmallBlock) for f in html fireworks.jpeg; do JOBS+=("SmallBlockBenchmarks|$f"); done ;;
     Corpus)     JOBS+=("CorpusBenchmarks|") ;;
+    Crc)        JOBS+=("Crc32CBenchmarks|") ;;
     *)          JOBS+=("$cls|") ;;
   esac
 done
