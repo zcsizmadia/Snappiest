@@ -53,6 +53,24 @@ The `dotnet` CLI is at `C:\Program Files\dotnet\dotnet.exe` (not on PATH in Clau
 - Over-copying (16/32/64-byte vector stores past the end) is fine only inside the slop the callers guarantee; the
   guard-page tests catch violations.
 
+## Measured dead ends (don't redo without a new angle)
+
+Decoder (`BlockDecompressor`, about 11 cycles/tag, of which about 8 are the tag-to-tag dependency chain):
+- Removing the one-tag deferred copy: 3-6% slower. Always copying 64 bytes instead of 32 or 64: up to 10% slower.
+- `?:` selects instead of mask arithmetic: the JIT emits branches, up to 32% slower on text.
+- Fewer instructions for the next-tag advance (single load, other ip formulas): within noise.
+- Running the fast loop closer to the input/output end (padded tail buffer, halved margins): no gain on 1-4KB blocks.
+- Handling long literals inside the fast loop: only 1-3 per block, nothing to gain.
+
+Compressor (`BlockCompressor`, same algorithm and output size as Snappier):
+- klauspost/s2-style match finder: faster on text but 2-7% larger output and 43% slower on incompressible data.
+- Backward match extension / repeat-offset check: speed-neutral, 0.1% smaller. Not worth the code.
+- `AggressiveOptimization`: 2-12% slower (loses dynamic PGO). Branch-free copy emit for lengths 12-64: 1-2% slower.
+- Reusing the hash table between calls: clearing is about 2% of a 4KB message.
+
+CRC: 128-bit PCLMULQDQ folding is 1.8x slower than the CRC32 instruction on Zen 3; computing the CRC during decode
+gives no cache benefit (the output is L2-resident anyway).
+
 ## Git
 
 GitHub repo `zcsizmadia/SnappySimd`; commits use `zcsizmadia@gmail.com` (set in this repo's config).
