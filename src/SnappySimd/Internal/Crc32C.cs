@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
 using System.Runtime.Intrinsics.X86;
 
@@ -9,9 +10,11 @@ namespace SnappySimd.Internal;
 /// CRC-32C (Castagnoli), as required by the Snappy framing format.
 /// </summary>
 /// <remarks>
-/// On x64 (SSE4.2) and arm64 (CRC32) the hardware instruction is used. Its throughput is about three times its
-/// latency, so large inputs are processed as three independent streams whose results are combined with a
-/// precomputed GF(2) shift, which roughly triples throughput over a single dependency chain.
+/// On x64 CPUs with 256-bit carry-less multiply (VPCLMULQDQ, .NET 10+) the data is folded with 256-bit CLMULs,
+/// measured 10-23% faster than the CRC32 instruction on Zen 3. Otherwise the CRC32 instruction (SSE4.2, arm64 CRC32)
+/// is used: its throughput is about three times its latency, so large inputs are processed as three independent
+/// streams combined with a precomputed GF(2) shift. 128-bit folding (UpdateFolding) is kept for the 256-bit path's
+/// tail; on its own it is slower than the CRC32 instruction on Zen 3 (PCLMULQDQ throughput is half that of CRC32).
 /// </remarks>
 internal static class Crc32C
 {
@@ -45,8 +48,169 @@ internal static class Crc32C
     public static uint ComputeMasked(ReadOnlySpan<byte> source) => ApplyMask(Compute(source));
 
     // Operates on the raw (non-inverted) CRC register
-    internal static uint Update(uint state, ReadOnlySpan<byte> source) =>
-        IsHardwareAccelerated ? UpdateHardware(state, source) : UpdateSoftware(state, source);
+    internal static uint Update(uint state, ReadOnlySpan<byte> source)
+    {
+#if NET10_0_OR_GREATER
+        // 256-bit carry-less multiply folds two lanes per instruction, faster than the CRC32 instruction
+        if (Pclmulqdq.V256.IsSupported && Sse42.X64.IsSupported && source.Length >= 256)
+        {
+            return UpdateFolding256(state, source);
+        }
+#endif
+
+        return IsHardwareAccelerated ? UpdateHardware(state, source) : UpdateSoftware(state, source);
+    }
+
+    /// <summary>True when carry-less multiply is available (PCLMULQDQ on x64, PMULL on arm64).</summary>
+    internal static bool IsFoldingAccelerated =>
+        (Pclmulqdq.IsSupported && Sse42.X64.IsSupported) || (System.Runtime.Intrinsics.Arm.Aes.IsSupported && Crc32.Arm64.IsSupported);
+
+    // Fold constants: (x^n mod P) in reflected bit order, shifted left by one for the reflected carry-less product.
+    // 512-bit fold distance for the four lanes, 128-bit for combining lanes. Same derivation as the published
+    // constants for crc32-pclmul (Linux) and crc32_iscsi (ISA-L).
+    private static readonly Vector128<ulong> s_fold512 = Vector128.Create((ulong)PowerOfX(512 + 32) << 1, (ulong)PowerOfX(512 - 32) << 1);
+    private static readonly Vector128<ulong> s_fold128 = Vector128.Create((ulong)PowerOfX(128 + 32) << 1, (ulong)PowerOfX(128 - 32) << 1);
+
+    /// <summary>
+    /// CRC by polynomial folding: four 16-byte lanes are folded forward 64 bytes at a time with carry-less
+    /// multiplies, then combined into one 16-byte remainder whose CRC (from a zero register) equals the CRC of
+    /// everything folded. That last step uses the CRC32 instruction, so no Barrett reduction is needed.
+    /// </summary>
+    internal static uint UpdateFolding(uint state, ReadOnlySpan<byte> source)
+    {
+        ref byte p = ref MemoryMarshal.GetReference(source);
+        nuint length = (nuint)source.Length;
+
+        if (length >= 128)
+        {
+            Vector128<ulong> fold512 = s_fold512;
+            Vector128<ulong> fold128 = s_fold128;
+
+            // The incoming register is folded in by XOR-ing it into the first 4 bytes
+            Vector128<ulong> x0 = Load(ref p) ^ Vector128.CreateScalar((ulong)state);
+            Vector128<ulong> x1 = Load(ref Unsafe.Add(ref p, 16));
+            Vector128<ulong> x2 = Load(ref Unsafe.Add(ref p, 32));
+            Vector128<ulong> x3 = Load(ref Unsafe.Add(ref p, 48));
+            p = ref Unsafe.Add(ref p, 64);
+            length -= 64;
+
+            while (length >= 64)
+            {
+                x0 = Fold(x0, fold512) ^ Load(ref p);
+                x1 = Fold(x1, fold512) ^ Load(ref Unsafe.Add(ref p, 16));
+                x2 = Fold(x2, fold512) ^ Load(ref Unsafe.Add(ref p, 32));
+                x3 = Fold(x3, fold512) ^ Load(ref Unsafe.Add(ref p, 48));
+                p = ref Unsafe.Add(ref p, 64);
+                length -= 64;
+            }
+
+            Vector128<ulong> x = Fold(x0, fold128) ^ x1;
+            x = Fold(x, fold128) ^ x2;
+            x = Fold(x, fold128) ^ x3;
+
+            while (length >= 16)
+            {
+                x = Fold(x, fold128) ^ Load(ref p);
+                p = ref Unsafe.Add(ref p, 16);
+                length -= 16;
+            }
+
+            state = Step(Step(0, x.GetElement(0)), x.GetElement(1));
+        }
+
+        while (length >= 8)
+        {
+            state = Step(state, Unsafe.ReadUnaligned<ulong>(ref p));
+            p = ref Unsafe.Add(ref p, 8);
+            length -= 8;
+        }
+
+        while (length > 0)
+        {
+            state = Step(state, p);
+            p = ref Unsafe.Add(ref p, 1);
+            length--;
+        }
+
+        return state;
+    }
+
+#if NET10_0_OR_GREATER
+    private static readonly Vector256<ulong> s_fold1024x2 = Vector256.Create(
+        (ulong)PowerOfX(1024 + 32) << 1, (ulong)PowerOfX(1024 - 32) << 1, (ulong)PowerOfX(1024 + 32) << 1, (ulong)PowerOfX(1024 - 32) << 1);
+
+    /// <summary>
+    /// <see cref="UpdateFolding"/> with 256-bit carry-less multiplies (VPCLMULQDQ): eight lanes, 128 bytes per step.
+    /// </summary>
+    internal static uint UpdateFolding256(uint state, ReadOnlySpan<byte> source)
+    {
+        ref byte p = ref MemoryMarshal.GetReference(source);
+        nuint length = (nuint)source.Length;
+
+        if (length >= 256)
+        {
+            Vector256<ulong> k = s_fold1024x2;
+            Vector256<ulong> y0 = Vector256.LoadUnsafe(ref p).AsUInt64() ^ Vector256.CreateScalar((ulong)state);
+            Vector256<ulong> y1 = Vector256.LoadUnsafe(ref Unsafe.Add(ref p, 32)).AsUInt64();
+            Vector256<ulong> y2 = Vector256.LoadUnsafe(ref Unsafe.Add(ref p, 64)).AsUInt64();
+            Vector256<ulong> y3 = Vector256.LoadUnsafe(ref Unsafe.Add(ref p, 96)).AsUInt64();
+            p = ref Unsafe.Add(ref p, 128);
+            length -= 128;
+
+            while (length >= 128)
+            {
+                y0 = Fold256(y0, k) ^ Vector256.LoadUnsafe(ref p).AsUInt64();
+                y1 = Fold256(y1, k) ^ Vector256.LoadUnsafe(ref Unsafe.Add(ref p, 32)).AsUInt64();
+                y2 = Fold256(y2, k) ^ Vector256.LoadUnsafe(ref Unsafe.Add(ref p, 64)).AsUInt64();
+                y3 = Fold256(y3, k) ^ Vector256.LoadUnsafe(ref Unsafe.Add(ref p, 96)).AsUInt64();
+                p = ref Unsafe.Add(ref p, 128);
+                length -= 128;
+            }
+
+            // Combine the eight lanes in stream order
+            Vector128<ulong> fold128 = s_fold128;
+            Vector128<ulong> x = Fold(y0.GetLower(), fold128) ^ y0.GetUpper();
+            x = Fold(x, fold128) ^ y1.GetLower();
+            x = Fold(x, fold128) ^ y1.GetUpper();
+            x = Fold(x, fold128) ^ y2.GetLower();
+            x = Fold(x, fold128) ^ y2.GetUpper();
+            x = Fold(x, fold128) ^ y3.GetLower();
+            x = Fold(x, fold128) ^ y3.GetUpper();
+
+            while (length >= 16)
+            {
+                x = Fold(x, fold128) ^ Load(ref p);
+                p = ref Unsafe.Add(ref p, 16);
+                length -= 16;
+            }
+
+            state = Step(Step(0, x.GetElement(0)), x.GetElement(1));
+        }
+
+        return UpdateFolding(state, MemoryMarshal.CreateReadOnlySpan(ref p, (int)length));
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector256<ulong> Fold256(Vector256<ulong> y, Vector256<ulong> k) =>
+        Pclmulqdq.V256.CarrylessMultiply(y, k, 0x00) ^ Pclmulqdq.V256.CarrylessMultiply(y, k, 0x11);
+#endif
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector128<ulong> Load(ref byte p) => Vector128.LoadUnsafe(ref p).AsUInt64();
+
+    // lo(x) * lo(k) ^ hi(x) * hi(k), carry-less
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector128<ulong> Fold(Vector128<ulong> x, Vector128<ulong> k)
+    {
+        if (Pclmulqdq.IsSupported)
+        {
+            return Pclmulqdq.CarrylessMultiply(x, k, 0x00) ^ Pclmulqdq.CarrylessMultiply(x, k, 0x11);
+        }
+
+        // Only called when IsFoldingAccelerated, so this is arm64
+        return System.Runtime.Intrinsics.Arm.Aes.PolynomialMultiplyWideningLower(x.GetLower(), k.GetLower())
+               ^ System.Runtime.Intrinsics.Arm.Aes.PolynomialMultiplyWideningUpper(x, k);
+    }
 
     internal static uint UpdateHardware(uint state, ReadOnlySpan<byte> source)
     {
