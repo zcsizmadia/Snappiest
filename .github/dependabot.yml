@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # Test and benchmark tooling moves often; one PR for all of it
+      test-and-benchmark:
+        patterns:
+          - TUnit*
+          - BenchmarkDotNet*
+          - Snappier
+      dotnet-tools:
+        patterns:
+          - dotnet-*
+          - coverlet*
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
