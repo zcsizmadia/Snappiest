@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SnappySimd/SnappySimd.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SnappySimd.Tests/SnappySimd.Tests.csproj" />
+  </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/SnappySimd.Benchmarks/SnappySimd.Benchmarks.csproj" />
+  </Folder>
+</Solution>

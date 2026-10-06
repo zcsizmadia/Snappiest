@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+          - name: windows-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - run: dotnet test --project tests/SnappySimd.Tests -c Release
+
+  # Branch coverage can only be merged while collecting (coverlet --merge-with), so the arm64 run continues from
+  # the x64 result instead of running in parallel. Each run also repeats the tests with AVX2 and all hardware
+  # intrinsics disabled, to cover the scalar fallbacks.
+  coverage-x64:
+    name: Coverage (x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - run: scripts/coverage.sh net10.0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-x64
+          path: TestResults/coverage/coverage.json
+
+  coverage-arm64:
+    name: Coverage (arm64, merged)
+    needs: coverage-x64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-x64
+          path: coverage-x64
+      - run: scripts/coverage.sh net10.0 coverage-x64/coverage.json
+      - run: cat TestResults/coverage/Summary.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: TestResults/coverage
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        with:
+          path: TestResults/coverage
+
+  # Publishes the HTML coverage report and the coverage badges to GitHub Pages on every push to main
+  publish-coverage:
+    name: Publish coverage
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: coverage-arm64
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,8 @@
+* text=auto
+
+# Shell scripts must keep LF to run on Linux and macOS
+*.sh text eol=lf
+*.mjs text eol=lf
+
+# Test data is compared byte for byte (e.g. alice29.snappy must decompress to alice29.txt): never convert
+testdata/** -text
