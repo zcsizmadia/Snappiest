@@ -10,7 +10,9 @@ namespace SnappySimd.Internal;
 /// CRC-32C (Castagnoli), as required by the Snappy framing format.
 /// </summary>
 /// <remarks>
-/// On x64 CPUs with 256-bit carry-less multiply (VPCLMULQDQ, .NET 10+) the data is folded with 256-bit CLMULs,
+/// On x64 CPUs with 256-bit carry-less multiply (VPCLMULQDQ, .NET 10+) the data is folded with 256-bit CLMULs; inputs of
+/// 16000+ bytes also run three CRC32 instruction lanes in the same loop (different execution units, measured 30% faster
+/// than folding alone on Zen 3). Folding alone was
 /// measured 10-23% faster than the CRC32 instruction on Zen 3. Otherwise the CRC32 instruction (SSE4.2, arm64 CRC32)
 /// is used: its throughput is about three times its latency, so large inputs are processed as three independent
 /// streams combined with a precomputed GF(2) shift. 128-bit folding (UpdateFolding) is kept for the 256-bit path's
@@ -54,7 +56,7 @@ internal static class Crc32C
         // 256-bit carry-less multiply folds two lanes per instruction, faster than the CRC32 instruction
         if (Pclmulqdq.V256.IsSupported && Sse42.X64.IsSupported && source.Length >= 256)
         {
-            return UpdateFolding256(state, source);
+            return source.Length >= HybridBlock ? UpdateHybrid(state, source) : UpdateFolding256(state, source);
         }
 #endif
 
@@ -193,6 +195,82 @@ internal static class Crc32C
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static Vector256<ulong> Fold256(Vector256<ulong> y, Vector256<ulong> k) =>
         Pclmulqdq.V256.CarrylessMultiply(y, k, 0x00) ^ Pclmulqdq.V256.CarrylessMultiply(y, k, 0x11);
+
+    // Hybrid: VPCLMULQDQ folding and the CRC32 instruction run on different execution units, each capped near
+    // 8 bytes/cycle on Zen 3, so one loop drives both: 128 bytes of folding plus 3 x 40 bytes of CRC32 per step.
+    private const int HybridIterations = 64;
+    private const int HybridFoldLane = 128 + (HybridIterations * 128);   // 8320
+    private const int HybridCrcLane = HybridIterations * 40;              // 2560
+    private const int HybridBlock = HybridFoldLane + (3 * HybridCrcLane); // 16000
+    private static readonly uint[] s_shiftHybrid = BuildShiftTable(HybridCrcLane);
+
+    internal static uint UpdateHybrid(uint state, ReadOnlySpan<byte> source)
+    {
+        ref byte p = ref MemoryMarshal.GetReference(source);
+        nuint length = (nuint)source.Length;
+        Vector256<ulong> k = s_fold1024x2;
+        Vector128<ulong> fold128 = s_fold128;
+        uint[] shift = s_shiftHybrid;
+
+        while (length >= HybridBlock)
+        {
+            Vector256<ulong> y0 = Vector256.LoadUnsafe(ref p).AsUInt64() ^ Vector256.CreateScalar((ulong)state);
+            Vector256<ulong> y1 = Vector256.LoadUnsafe(ref Unsafe.Add(ref p, 32)).AsUInt64();
+            Vector256<ulong> y2 = Vector256.LoadUnsafe(ref Unsafe.Add(ref p, 64)).AsUInt64();
+            Vector256<ulong> y3 = Vector256.LoadUnsafe(ref Unsafe.Add(ref p, 96)).AsUInt64();
+            ref byte f = ref Unsafe.Add(ref p, 128);
+            ref byte c0 = ref Unsafe.Add(ref p, HybridFoldLane);
+            ref byte c1 = ref Unsafe.Add(ref c0, HybridCrcLane);
+            ref byte c2 = ref Unsafe.Add(ref c1, HybridCrcLane);
+            uint crc0 = 0, crc1 = 0, crc2 = 0;
+
+            for (int i = 0; i < HybridIterations; i++)
+            {
+                y0 = Fold256(y0, k) ^ Vector256.LoadUnsafe(ref f).AsUInt64();
+                y1 = Fold256(y1, k) ^ Vector256.LoadUnsafe(ref Unsafe.Add(ref f, 32)).AsUInt64();
+                y2 = Fold256(y2, k) ^ Vector256.LoadUnsafe(ref Unsafe.Add(ref f, 64)).AsUInt64();
+                y3 = Fold256(y3, k) ^ Vector256.LoadUnsafe(ref Unsafe.Add(ref f, 96)).AsUInt64();
+                f = ref Unsafe.Add(ref f, 128);
+
+                crc0 = Step(crc0, Unsafe.ReadUnaligned<ulong>(ref c0));
+                crc1 = Step(crc1, Unsafe.ReadUnaligned<ulong>(ref c1));
+                crc2 = Step(crc2, Unsafe.ReadUnaligned<ulong>(ref c2));
+                crc0 = Step(crc0, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c0, 8)));
+                crc1 = Step(crc1, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c1, 8)));
+                crc2 = Step(crc2, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c2, 8)));
+                crc0 = Step(crc0, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c0, 16)));
+                crc1 = Step(crc1, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c1, 16)));
+                crc2 = Step(crc2, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c2, 16)));
+                crc0 = Step(crc0, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c0, 24)));
+                crc1 = Step(crc1, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c1, 24)));
+                crc2 = Step(crc2, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c2, 24)));
+                crc0 = Step(crc0, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c0, 32)));
+                crc1 = Step(crc1, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c1, 32)));
+                crc2 = Step(crc2, Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref c2, 32)));
+                c0 = ref Unsafe.Add(ref c0, 40);
+                c1 = ref Unsafe.Add(ref c1, 40);
+                c2 = ref Unsafe.Add(ref c2, 40);
+            }
+
+            Vector128<ulong> x = Fold(y0.GetLower(), fold128) ^ y0.GetUpper();
+            x = Fold(x, fold128) ^ y1.GetLower();
+            x = Fold(x, fold128) ^ y1.GetUpper();
+            x = Fold(x, fold128) ^ y2.GetLower();
+            x = Fold(x, fold128) ^ y2.GetUpper();
+            x = Fold(x, fold128) ^ y3.GetLower();
+            x = Fold(x, fold128) ^ y3.GetUpper();
+            uint crc = Step(Step(0, x.GetElement(0)), x.GetElement(1));
+
+            crc = Shift(shift, crc) ^ crc0;
+            crc = Shift(shift, crc) ^ crc1;
+            state = Shift(shift, crc) ^ crc2;
+
+            p = ref Unsafe.Add(ref p, HybridBlock);
+            length -= HybridBlock;
+        }
+
+        return UpdateFolding256(state, MemoryMarshal.CreateReadOnlySpan(ref p, (int)length));
+    }
 #endif
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
