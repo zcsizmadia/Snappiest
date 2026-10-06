@@ -43,6 +43,7 @@ Small behaviour differences, all on invalid input or edge cases:
 | Stream identifier chunk with wrong contents | ignored | throws `InvalidDataException` |
 | `SnappyStream.Flush()` | writes buffered data | writes buffered data and flushes the base stream |
 | Block header claims far more output than the input can produce | allocates, then fails | fails before allocating |
+| Block whose tags overrun the declared length or the input (corrupt data) | may return data | throws `InvalidDataException`, like google/snappy |
 | `SnappyStream.Read` | fills the whole buffer when possible | may return fewer bytes, like `DeflateStream` |
 
 ## Usage
@@ -216,6 +217,14 @@ scripts/coverage.sh        # coverage across CPU feature configurations
 
 Tests use [TUnit](https://github.com/thomhurst/TUnit) and include interop tests against Snappier, corruption fuzzing,
 and guard-page tests that crash on any out-of-bounds access.
+
+The fuzz tests (`tests/SnappySimd.Tests/Fuzz`) generate realistic and corrupt inputs and compare SnappySimd with
+Snappier and a plain spec decoder. They run for about a second each in normal test runs; set `SNAPPY_FUZZ_SECONDS`
+for longer runs (the nightly workflow does) and `SNAPPY_FUZZ_SEED` to replay a reported failure:
+
+```shell
+SNAPPY_FUZZ_SECONDS=300 dotnet test --project tests/SnappySimd.Tests -c Release -- --treenode-filter "/*/*/*FuzzTests/*"
+```
 
 ## License
 
