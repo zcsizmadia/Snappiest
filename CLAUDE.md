@@ -43,6 +43,11 @@ The `dotnet` CLI is at `C:\Program Files\dotnet\dotnet.exe` (not on PATH in Clau
 - Do not use `stackalloc` or `[MethodImpl(AggressiveOptimization)]` in hot loops: both stop tiered compilation, so
   the method never gets Tier-1 (no dynamic PGO, `static readonly` table pointers are not folded into constants).
 - RyuJIT often turns `cond ? a : b` into branches inside big loops; write hot selects as mask arithmetic.
+- Dynamic PGO profiles each method from its first calls. A hot-loop method that small inputs call and immediately
+  return from gets profiled as "loop body cold", and every later large input runs slow code (measured: 64KB html
+  decompression went from 16% faster than Snappier to 11% slower after a few 64 byte calls). Check entry conditions
+  in the caller so the loop method is only called when it will run. Benchmark mixed sizes in one process
+  (SmallBlockBenchmarks does) to catch this; single-size benchmarks hide it.
 - Check codegen with `DOTNET_JitDisasm=<method> DOTNET_JitStdOutFile=/tmp/x.asm` on the remote host and look for
   the `Tier1` listing.
 - Over-copying (16/32/64-byte vector stores past the end) is fine only inside the slop the callers guarantee; the
