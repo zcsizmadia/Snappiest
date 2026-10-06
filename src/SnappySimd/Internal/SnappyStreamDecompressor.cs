@@ -36,6 +36,12 @@ internal sealed class SnappyStreamDecompressor : IDisposable
 
     private long _skipRemaining;
 
+    // Set when a chunk decoded in a parallel batch failed. The batch's input is already consumed, so unlike the
+    // sequential path (which leaves a bad chunk unread) every later read must fail too.
+    private Exception? _failure;
+
+    private readonly int[] _batchOffsets;
+
     public SnappyStreamDecompressor(SnappyParallelOptions? parallel = null)
     {
         int threads = parallel?.MaxDegreeOfParallelism ?? 1;
@@ -43,6 +49,7 @@ internal sealed class SnappyStreamDecompressor : IDisposable
         _parallelOptions = threads > 1 ? new ParallelOptions { MaxDegreeOfParallelism = threads } : null;
         _slotLengths = new int[_batchChunks];
         _slotErrors = new Exception?[_batchChunks];
+        _batchOffsets = new int[_batchChunks];
 
         int inputSize = Math.Max(SequentialInputBufferSize, (_batchChunks + 1) * (StreamFormat.ChunkHeaderLength + StreamFormat.MaxDataChunkLength));
         _input = ArrayPool<byte>.Shared.Rent(inputSize);
@@ -54,6 +61,11 @@ internal sealed class SnappyStreamDecompressor : IDisposable
     /// <returns>The number of bytes written. Zero means more input is needed.</returns>
     public int Read(Span<byte> destination)
     {
+        if (_failure is not null)
+        {
+            ExceptionDispatchInfo.Throw(_failure);
+        }
+
         // SnappyStream checks for disposal before calling
         byte[] input = _input!;
         int written = 0;
@@ -64,8 +76,9 @@ internal sealed class SnappyStreamDecompressor : IDisposable
             {
                 if (_slotErrors[_slot] is { } error)
                 {
-                    // The chunk failed when it was decoded in a batch: fail now that reading has reached it
+                    // The chunk failed when it was decoded in a batch: fail now that reading has reached it, and stay failed
                     _slotCount = _slot = 0;
+                    _failure = error;
                     ExceptionDispatchInfo.Throw(error);
                 }
 
@@ -193,7 +206,7 @@ internal sealed class SnappyStreamDecompressor : IDisposable
     /// <returns><c>false</c> if there is no such run; the sequential path then handles the next chunk.</returns>
     private bool DecodeBatch(byte[] input)
     {
-        Span<int> offsets = stackalloc int[_batchChunks];
+        int[] offsets = _batchOffsets;
         int count = 0;
         int position = _inputStart;
 
@@ -221,13 +234,12 @@ internal sealed class SnappyStreamDecompressor : IDisposable
 
         _output ??= ArrayPool<byte>.Shared.Rent(_batchChunks * StreamFormat.MaxChunkDataLength);
         byte[] output = _output;
-        int[] chunkOffsets = offsets.Slice(0, count).ToArray();
         int[] lengths = _slotLengths;
         Exception?[] errors = _slotErrors;
 
         Parallel.For(0, count, _parallelOptions!, i =>
         {
-            int offset = chunkOffsets[i];
+            int offset = offsets[i];
             uint header = BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(offset));
             ReadOnlySpan<byte> chunk = input.AsSpan(offset + StreamFormat.ChunkHeaderLength, (int)(header >> 8));
             try
