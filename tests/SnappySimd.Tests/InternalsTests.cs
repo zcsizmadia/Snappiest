@@ -99,6 +99,40 @@ public class Crc32CTests
     }
 #endif
 
+#if NET10_0_OR_GREATER
+    [Test]
+    public async Task Hybrid_MatchesSoftware_AroundBlockBoundaries()
+    {
+        if (!System.Runtime.Intrinsics.X86.Pclmulqdq.V256.IsSupported || !Crc32C.IsFoldingAccelerated)
+        {
+            return;
+        }
+
+        byte[] data = new byte[100_000];
+        new Random(5).NextBytes(data);
+        int mismatches = 0;
+
+        // One, two and several 16000 byte hybrid blocks, each with remainders of every 16 byte step and small odd ones
+        IEnumerable<int> lengths = new[] { 16000, 32000, 48000, 64000, 96000 }
+            .SelectMany(block => Enumerable.Range(-20, 300).Select(delta => block + delta))
+            .Concat([65536, 65537, 99_999, 100_000]);
+        foreach (int length in lengths)
+        {
+            foreach (uint state in new[] { 0u, ~0u, 0x2468ACE0u })
+            {
+                ReadOnlySpan<byte> slice = data.AsSpan(0, length);
+                if (Crc32C.UpdateHybrid(state, slice) != Crc32C.UpdateSoftware(state, slice)
+                    || Crc32C.Update(state, slice) != Crc32C.UpdateSoftware(state, slice))
+                {
+                    mismatches++;
+                }
+            }
+        }
+
+        await Assert.That(mismatches).IsEqualTo(0);
+    }
+#endif
+
     [Test]
     public async Task Append_EqualsWhole()
     {
