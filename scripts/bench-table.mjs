@@ -2,11 +2,13 @@
 // SnappySimd: one table per benchmark class, with a speedup column per runtime.
 //
 // Usage: node scripts/bench-table.mjs net8.0=out8.txt net10.0=out10.txt net11.0=out11.txt
+// Several runs of one runtime can be joined with "+" (net8.0=run1.txt+run2.txt): each library then gets its best
+// (lowest) mean across the runs.
 import { readFileSync } from 'node:fs';
 
 const runs = process.argv.slice(2).map(arg => {
   const [runtime, file] = arg.split('=');
-  return { runtime, text: readFileSync(file, 'utf8') };
+  return { runtime, text: file.split('+').map(f => readFileSync(f, 'utf8')).join('\n') };
 });
 
 // Parses BenchmarkDotNet GitHub tables: "| Method | Categories | <Param> | Mean | ..."
@@ -24,7 +26,12 @@ function parse(text) {
     const row = Object.fromEntries(columns.map((c, i) => [c, cells[i]]));
     const [operation, library] = row.Method.split('_');
     const param = [row.File, row.Size && `${row.Size} B`].filter(Boolean).join(' ') || 'all files';
-    rows.push({ cls, operation, library, param, mean: row.Mean });
+    const previous = rows.find(r => r.cls === cls && r.operation === operation && r.library === library && r.param === param);
+    if (!previous) {
+      rows.push({ cls, operation, library, param, mean: row.Mean });
+    } else if (toNs(row.Mean) < toNs(previous.mean)) {
+      previous.mean = row.Mean;
+    }
   }
   return rows;
 }

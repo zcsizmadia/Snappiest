@@ -120,10 +120,30 @@ disabled to cover them.
 ## Benchmarks
 
 AMD EPYC 7543 (Zen 3, AVX2), Ubuntu 22.04, BenchmarkDotNet 0.16 (medium job, in-process, one benchmark process per
-physical core). Snappier 1.3.1 is the baseline; speedup is Snappier time / SnappySimd time. .NET 11 is RC 1.
+physical core). Snappier 1.3.1 is the baseline; speedup is Snappier time / SnappySimd time. .NET 11 is RC 1. Raw block
+and small-message results are the best of two runs for each library.
 
-SnappySimd is faster in 115 of 117 comparisons below; the two exceptions (net8.0, fireworks.jpeg compression at
-0.95x and html decompression at 0.98x) are microsecond-scale inputs within run-to-run noise.
+SnappySimd is faster in 150 of the 156 comparisons below (245 of 252 in the
+[full results](docs/benchmarks/README.md)). The exceptions are all decompression of 1-64 KB html messages: 0.96-0.99x
+on .NET 8 and 10, and 0.87-0.99x on .NET 11 RC 1, where Snappier's decoder got faster on small compressible inputs.
+Both libraries finish those in 0.3-15 µs.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/speedup-dark.svg">
+  <img alt="Bar charts: SnappySimd speedup over Snappier per file for block and stream compression and decompression on .NET 10" src="docs/benchmarks/speedup-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/small-dark.svg">
+  <img alt="Line charts: SnappySimd speedup over Snappier by message size, 64 B to 64 KB, for html and fireworks.jpeg on .NET 10" src="docs/benchmarks/small-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/parallel-dark.svg">
+  <img alt="Line chart: opt-in parallel speedup over Snappier by thread count for a 16 MB JSON input on .NET 10" src="docs/benchmarks/parallel-light.svg">
+</picture>
+
+Charts are .NET 10; the tables cover all three runtimes.
 
 #### Raw blocks (`Snappy.Compress` / `Snappy.Decompress`, whole file)
 
@@ -131,59 +151,82 @@ SnappySimd is faster in 115 of 117 comparisons below; the two exceptions (net8.0
 
 | Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup | Snappier (net11.0) | SnappySimd (net11.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| alice29.txt | 367 µs | 316 µs | **1.16x** | 331 µs | 286 µs | **1.16x** | 332 µs | 290 µs | **1.15x** |
-| asyoulik.txt | 310 µs | 279 µs | **1.11x** | 291 µs | 255 µs | **1.14x** | 290 µs | 242 µs | **1.20x** |
-| fireworks.jpeg | 4.8 µs | 5.1 µs | **0.95x** | 5.1 µs | 4.5 µs | **1.15x** | 4.2 µs | 4.0 µs | **1.05x** |
-| geo.protodata | 42.7 µs | 39.4 µs | **1.08x** | 41.3 µs | 38.2 µs | **1.08x** | 41.4 µs | 38.2 µs | **1.08x** |
-| html | 45.6 µs | 43.8 µs | **1.04x** | 43.3 µs | 42.7 µs | **1.01x** | 43.3 µs | 42.5 µs | **1.02x** |
-| html_x_4 | 320 µs | 291 µs | **1.10x** | 283 µs | 250 µs | **1.13x** | 282 µs | 249 µs | **1.13x** |
-| kppkn.gtb | 280 µs | 258 µs | **1.09x** | 265 µs | 246 µs | **1.08x** | 264 µs | 243 µs | **1.09x** |
-| lcet10.txt | 1.04 ms | 905 µs | **1.15x** | 966 µs | 865 µs | **1.12x** | 960 µs | 865 µs | **1.11x** |
-| paper-100k.pdf | 7.4 µs | 7.0 µs | **1.07x** | 7.4 µs | 7.1 µs | **1.04x** | 7.4 µs | 7.0 µs | **1.06x** |
-| plrabn12.txt | 1.35 ms | 1.22 ms | **1.11x** | 1.27 ms | 1.17 ms | **1.09x** | 1.28 ms | 1.15 ms | **1.11x** |
-| urls.10K | 1.14 ms | 1.02 ms | **1.11x** | 1.10 ms | 1.04 ms | **1.05x** | 1.08 ms | 1.01 ms | **1.07x** |
+| alice29.txt | 351 µs | 314 µs | **1.12x** | 332 µs | 287 µs | **1.16x** | 333 µs | 290 µs | **1.15x** |
+| asyoulik.txt | 310 µs | 273 µs | **1.13x** | 297 µs | 254 µs | **1.17x** | 290 µs | 245 µs | **1.19x** |
+| events.ndjson | 847 µs | 779 µs | **1.09x** | 780 µs | 739 µs | **1.05x** | 776 µs | 740 µs | **1.05x** |
+| fireworks.jpeg | 4.4 µs | 4.2 µs | **1.05x** | 4.2 µs | 4.1 µs | **1.02x** | 4.2 µs | 4.1 µs | **1.03x** |
+| geo.protodata | 42.6 µs | 38.7 µs | **1.10x** | 41.3 µs | 38.2 µs | **1.08x** | 41.2 µs | 37.8 µs | **1.09x** |
+| html | 45.4 µs | 43.8 µs | **1.04x** | 43.3 µs | 42.9 µs | **1.01x** | 43.3 µs | 42.7 µs | **1.01x** |
+| html_x_4 | 313 µs | 291 µs | **1.08x** | 273 µs | 248 µs | **1.10x** | 282 µs | 249 µs | **1.13x** |
+| json_api.json | 845 µs | 781 µs | **1.08x** | 786 µs | 740 µs | **1.06x** | 778 µs | 740 µs | **1.05x** |
+| json_indented.json | 472 µs | 448 µs | **1.05x** | 443 µs | 426 µs | **1.04x** | 438 µs | 415 µs | **1.06x** |
+| kppkn.gtb | 279 µs | 255 µs | **1.09x** | 264 µs | 246 µs | **1.07x** | 267 µs | 242 µs | **1.10x** |
+| lcet10.txt | 987 µs | 903 µs | **1.09x** | 944 µs | 873 µs | **1.08x** | 948 µs | 873 µs | **1.09x** |
+| paper-100k.pdf | 7.4 µs | 7.0 µs | **1.06x** | 7.3 µs | 7.0 µs | **1.04x** | 7.3 µs | 6.9 µs | **1.05x** |
+| plrabn12.txt | 1.32 ms | 1.20 ms | **1.10x** | 1.27 ms | 1.17 ms | **1.08x** | 1.28 ms | 1.15 ms | **1.11x** |
+| urls.10K | 1.13 ms | 1.04 ms | **1.09x** | 1.08 ms | 1.03 ms | **1.06x** | 1.08 ms | 1.01 ms | **1.06x** |
 
 **Decompress**
 
 | Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup | Snappier (net11.0) | SnappySimd (net11.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| alice29.txt | 116 µs | 90.2 µs | **1.29x** | 110 µs | 91.0 µs | **1.21x** | 112 µs | 103 µs | **1.09x** |
-| asyoulik.txt | 106 µs | 83.5 µs | **1.27x** | 107 µs | 82.3 µs | **1.29x** | 103 µs | 82.7 µs | **1.25x** |
-| fireworks.jpeg | 6.7 µs | 3.1 µs | **2.16x** | 7.9 µs | 2.5 µs | **3.21x** | 6.3 µs | 2.5 µs | **2.55x** |
-| geo.protodata | 23.0 µs | 20.1 µs | **1.14x** | 21.9 µs | 19.0 µs | **1.15x** | 20.8 µs | 19.2 µs | **1.09x** |
-| html | 22.4 µs | 22.7 µs | **0.98x** | 23.6 µs | 22.3 µs | **1.06x** | 22.3 µs | 21.8 µs | **1.02x** |
-| html_x_4 | 126 µs | 92.7 µs | **1.36x** | 132 µs | 89.6 µs | **1.48x** | 113 µs | 89.2 µs | **1.26x** |
-| kppkn.gtb | 109 µs | 96.3 µs | **1.13x** | 111 µs | 108 µs | **1.03x** | 105 µs | 104 µs | **1.01x** |
-| lcet10.txt | 321 µs | 245 µs | **1.31x** | 312 µs | 233 µs | **1.34x** | 318 µs | 234 µs | **1.36x** |
-| paper-100k.pdf | 6.9 µs | 3.9 µs | **1.77x** | 7.3 µs | 3.8 µs | **1.90x** | 7.0 µs | 3.8 µs | **1.83x** |
-| plrabn12.txt | 467 µs | 343 µs | **1.36x** | 438 µs | 336 µs | **1.30x** | 438 µs | 335 µs | **1.31x** |
-| urls.10K | 406 µs | 245 µs | **1.66x** | 388 µs | 240 µs | **1.62x** | 389 µs | 238 µs | **1.63x** |
+| alice29.txt | 114 µs | 85.0 µs | **1.34x** | 111 µs | 86.1 µs | **1.29x** | 112 µs | 90.0 µs | **1.25x** |
+| asyoulik.txt | 106 µs | 78.7 µs | **1.35x** | 105 µs | 77.4 µs | **1.36x** | 101 µs | 77.3 µs | **1.31x** |
+| events.ndjson | 354 µs | 219 µs | **1.62x** | 345 µs | 219 µs | **1.58x** | 417 µs | 218 µs | **1.91x** |
+| fireworks.jpeg | 6.4 µs | 2.5 µs | **2.61x** | 6.5 µs | 2.5 µs | **2.65x** | 6.2 µs | 2.5 µs | **2.53x** |
+| geo.protodata | 22.9 µs | 17.6 µs | **1.30x** | 22.1 µs | 18.0 µs | **1.23x** | 20.8 µs | 17.8 µs | **1.17x** |
+| html | 22.5 µs | 20.4 µs | **1.10x** | 23.4 µs | 20.7 µs | **1.13x** | 22.1 µs | 20.7 µs | **1.07x** |
+| html_x_4 | 125 µs | 85.0 µs | **1.47x** | 127 µs | 84.7 µs | **1.50x** | 113 µs | 83.8 µs | **1.34x** |
+| json_api.json | 581 µs | 219 µs | **2.65x** | 562 µs | 221 µs | **2.55x** | 396 µs | 219 µs | **1.81x** |
+| json_indented.json | 220 µs | 130 µs | **1.69x** | 221 µs | 125 µs | **1.77x** | 211 µs | 127 µs | **1.67x** |
+| kppkn.gtb | 109 µs | 92.0 µs | **1.18x** | 111 µs | 92.8 µs | **1.19x** | 102 µs | 91.9 µs | **1.11x** |
+| lcet10.txt | 321 µs | 225 µs | **1.43x** | 312 µs | 227 µs | **1.37x** | 317 µs | 237 µs | **1.34x** |
+| paper-100k.pdf | 7.1 µs | 3.8 µs | **1.85x** | 7.3 µs | 3.8 µs | **1.94x** | 7.0 µs | 3.8 µs | **1.86x** |
+| plrabn12.txt | 475 µs | 312 µs | **1.52x** | 437 µs | 314 µs | **1.39x** | 432 µs | 314 µs | **1.38x** |
+| urls.10K | 397 µs | 228 µs | **1.74x** | 383 µs | 226 µs | **1.70x** | 387 µs | 224 µs | **1.73x** |
 
-#### Small messages (`Snappy`, slice of html)
+#### Whole corpus in one operation (all files)
 
 **Compress**
 
 | Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup | Snappier (net11.0) | SnappySimd (net11.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 64 | 107 ns | 63 ns | **1.70x** | 89 ns | 58 ns | **1.54x** | 80 ns | 57 ns | **1.41x** |
-| 512 | 482 ns | 391 ns | **1.23x** | 441 ns | 380 ns | **1.16x** | 417 ns | 373 ns | **1.12x** |
-| 4096 | 3.3 µs | 3.1 µs | **1.07x** | 3.2 µs | 3.0 µs | **1.05x** | 3.1 µs | 3.1 µs | **1.02x** |
+| all files | 7.61 ms | 7.01 ms | **1.08x** | 7.33 ms | 6.88 ms | **1.07x** | 7.30 ms | 6.85 ms | **1.07x** |
 
 **Decompress**
 
 | Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup | Snappier (net11.0) | SnappySimd (net11.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 64 | 66 ns | 15 ns | **4.45x** | 68 ns | 12 ns | **5.60x** | 45 ns | 12 ns | **3.86x** |
-| 512 | 191 ns | 156 ns | **1.22x** | 179 ns | 152 ns | **1.17x** | 167 ns | 143 ns | **1.17x** |
-| 4096 | 1.6 µs | 1.6 µs | **1.00x** | 1.6 µs | 1.6 µs | **1.03x** | 1.6 µs | 1.5 µs | **1.03x** |
+| all files | 3.02 ms | 1.75 ms | **1.73x** | 2.85 ms | 1.82 ms | **1.57x** | 2.82 ms | 1.83 ms | **1.55x** |
+
+#### Small messages (`Snappy`, first N bytes of the file)
+
+**Compress**
+
+| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup | Snappier (net11.0) | SnappySimd (net11.0) | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| html 64 B | 110 ns | 64 ns | **1.71x** | 89 ns | 59 ns | **1.51x** | 84 ns | 58 ns | **1.44x** |
+| html 1024 B | 910 ns | 745 ns | **1.22x** | 849 ns | 746 ns | **1.14x** | 846 ns | 747 ns | **1.13x** |
+| html 4096 B | 3.3 µs | 3.0 µs | **1.12x** | 3.2 µs | 3.0 µs | **1.06x** | 3.2 µs | 3.0 µs | **1.06x** |
+| html 65536 B | 32.7 µs | 31.2 µs | **1.05x** | 31.8 µs | 31.4 µs | **1.01x** | 31.9 µs | 30.8 µs | **1.04x** |
+
+**Decompress**
+
+| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup | Snappier (net11.0) | SnappySimd (net11.0) | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| html 64 B | 79 ns | 44 ns | **1.81x** | 77 ns | 40 ns | **1.91x** | 57 ns | 39 ns | **1.44x** |
+| html 1024 B | 313 ns | 292 ns | **1.07x** | 295 ns | 302 ns | **0.98x** | 265 ns | 306 ns | **0.87x** |
+| html 4096 B | 1.4 µs | 1.4 µs | **0.96x** | 1.4 µs | 1.4 µs | **0.97x** | 1.3 µs | 1.4 µs | **0.90x** |
+| html 65536 B | 16.2 µs | 15.3 µs | **1.05x** | 16.2 µs | 15.3 µs | **1.06x** | 15.2 µs | 15.3 µs | **0.99x** |
 
 **RoundTripArray**
 
 | Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup | Snappier (net11.0) | SnappySimd (net11.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 64 | 242 ns | 130 ns | **1.87x** | 202 ns | 131 ns | **1.54x** | 166 ns | 107 ns | **1.56x** |
-| 512 | 779 ns | 645 ns | **1.21x** | 709 ns | 622 ns | **1.14x** | 673 ns | 613 ns | **1.10x** |
-| 4096 | 5.4 µs | 5.1 µs | **1.07x** | 5.3 µs | 5.0 µs | **1.06x** | 5.0 µs | 4.9 µs | **1.03x** |
+| html 64 B | 251 ns | 164 ns | **1.53x** | 215 ns | 154 ns | **1.40x** | 184 ns | 134 ns | **1.37x** |
+| html 1024 B | 1.4 µs | 1.2 µs | **1.16x** | 1.3 µs | 1.2 µs | **1.08x** | 1.2 µs | 1.2 µs | **1.04x** |
+| html 4096 B | 5.3 µs | 5.0 µs | **1.07x** | 5.1 µs | 5.0 µs | **1.02x** | 4.9 µs | 4.9 µs | **1.01x** |
+| html 65536 B | 56.8 µs | 49.2 µs | **1.15x** | 54.2 µs | 48.7 µs | **1.11x** | 52.2 µs | 48.4 µs | **1.08x** |
 
 #### Streams (`SnappyStream`, whole file)
 
@@ -191,19 +234,21 @@ SnappySimd is faster in 115 of 117 comparisons below; the two exceptions (net8.0
 
 | Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup | Snappier (net11.0) | SnappySimd (net11.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| alice29.txt | 388 µs | 326 µs | **1.19x** | 356 µs | 296 µs | **1.20x** | 359 µs | 303 µs | **1.18x** |
-| fireworks.jpeg | 23.8 µs | 14.5 µs | **1.64x** | 23.8 µs | 13.8 µs | **1.73x** | 23.8 µs | 13.8 µs | **1.72x** |
-| html_x_4 | 367 µs | 314 µs | **1.17x** | 342 µs | 265 µs | **1.29x** | 338 µs | 269 µs | **1.26x** |
-| urls.10K | 1.22 ms | 1.07 ms | **1.15x** | 1.18 ms | 1.07 ms | **1.10x** | 1.17 ms | 1.05 ms | **1.12x** |
+| alice29.txt | 374 µs | 322 µs | **1.16x** | 357 µs | 293 µs | **1.22x** | 358 µs | 300 µs | **1.19x** |
+| fireworks.jpeg | 23.9 µs | 14.9 µs | **1.60x** | 23.9 µs | 12.9 µs | **1.86x** | 24.1 µs | 12.2 µs | **1.98x** |
+| html_x_4 | 369 µs | 313 µs | **1.18x** | 329 µs | 258 µs | **1.27x** | 340 µs | 265 µs | **1.28x** |
+| json_api.json | 982 µs | 830 µs | **1.18x** | 915 µs | 780 µs | **1.17x** | 910 µs | 769 µs | **1.18x** |
+| urls.10K | 1.23 ms | 1.08 ms | **1.13x** | 1.18 ms | 1.05 ms | **1.12x** | 1.18 ms | 1.04 ms | **1.13x** |
 
 **Decompress**
 
 | Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup | Snappier (net11.0) | SnappySimd (net11.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| alice29.txt | 141 µs | 100 µs | **1.41x** | 142 µs | 99.7 µs | **1.42x** | 141 µs | 96.2 µs | **1.46x** |
-| fireworks.jpeg | 18.9 µs | 9.7 µs | **1.94x** | 18.9 µs | 9.6 µs | **1.96x** | 18.9 µs | 9.8 µs | **1.94x** |
-| html_x_4 | 188 µs | 110 µs | **1.71x** | 183 µs | 106 µs | **1.72x** | 179 µs | 108 µs | **1.65x** |
-| urls.10K | 492 µs | 298 µs | **1.65x** | 479 µs | 273 µs | **1.76x** | 466 µs | 277 µs | **1.68x** |
+| alice29.txt | 140 µs | 92.9 µs | **1.51x** | 143 µs | 91.5 µs | **1.56x** | 140 µs | 95.5 µs | **1.47x** |
+| fireworks.jpeg | 19.0 µs | 11.4 µs | **1.66x** | 18.3 µs | 8.0 µs | **2.29x** | 18.9 µs | 8.1 µs | **2.34x** |
+| html_x_4 | 183 µs | 102 µs | **1.79x** | 188 µs | 96.3 µs | **1.95x** | 178 µs | 97.7 µs | **1.82x** |
+| json_api.json | 461 µs | 267 µs | **1.73x** | 459 µs | 250 µs | **1.84x** | 436 µs | 249 µs | **1.75x** |
+| urls.10K | 491 µs | 275 µs | **1.79x** | 474 µs | 253 µs | **1.88x** | 473 µs | 254 µs | **1.86x** |
 
 Reproduce with `scripts/bench-remote.sh` (or run `benchmarks/SnappySimd.Benchmarks` directly with BenchmarkDotNet).
 
