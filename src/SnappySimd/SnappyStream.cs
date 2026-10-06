@@ -58,6 +58,30 @@ public sealed class SnappyStream : Stream
     /// <exception cref="ArgumentException">Stream read/write capability doesn't match with <paramref name="mode"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Invalid <paramref name="mode"/>.</exception>
     public SnappyStream(Stream stream, CompressionMode mode, bool leaveOpen)
+        : this(parallel: null, stream, mode, leaveOpen)
+    {
+    }
+
+    /// <summary>
+    /// Create a stream which compresses or decompresses using several threads. Batches of 64KB chunks are processed
+    /// concurrently; the compressed stream is identical to the single-threaded one.
+    /// </summary>
+    /// <param name="stream">Source or destination stream.</param>
+    /// <param name="mode">Compression or decompression mode.</param>
+    /// <param name="leaveOpen">If true, leave <paramref name="stream"/> open when this stream is disposed.</param>
+    /// <param name="options">Threading options.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="stream"/> or <paramref name="options"/> is null.</exception>
+    /// <exception cref="ArgumentException">Stream read/write capability doesn't match with <paramref name="mode"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Invalid <paramref name="mode"/>.</exception>
+    /// <remarks>
+    /// Buffers grow with the number of threads: about 200KB of input and output per thread.
+    /// </remarks>
+    public SnappyStream(Stream stream, CompressionMode mode, bool leaveOpen, SnappyParallelOptions options)
+        : this(options ?? throw new ArgumentNullException(nameof(options)), stream, mode, leaveOpen)
+    {
+    }
+
+    private SnappyStream(SnappyParallelOptions? parallel, Stream stream, CompressionMode mode, bool leaveOpen)
     {
         ArgumentNullException.ThrowIfNull(stream);
         _stream = stream;
@@ -72,7 +96,7 @@ public sealed class SnappyStream : Stream
                     ThrowHelper.ThrowArgumentException("Unreadable stream", nameof(stream));
                 }
 
-                _decompressor = new SnappyStreamDecompressor();
+                _decompressor = new SnappyStreamDecompressor(parallel);
                 break;
 
             case CompressionMode.Compress:
@@ -81,7 +105,7 @@ public sealed class SnappyStream : Stream
                     ThrowHelper.ThrowArgumentException("Unwritable stream", nameof(stream));
                 }
 
-                _compressor = new SnappyStreamCompressor();
+                _compressor = new SnappyStreamCompressor(parallel);
                 break;
 
             default:
