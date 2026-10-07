@@ -191,7 +191,9 @@ internal static unsafe class BlockDecompressor
             // return at once would teach the JIT that the loop body is cold, which slows every later large input
             if (ipEnd - ip > BranchlessInputMargin && op < opLimitMinSlop - SlopBytes)
             {
-                DecompressBranchless(ref ip, ipEnd, ref op, opBase, opLimitMinSlop);
+                Positions after = DecompressBranchless(ip, ipEnd, op, opBase, opLimitMinSlop);
+                ip = after.Ip;
+                op = after.Op;
             }
 
             if (ip >= ipEnd)
@@ -425,17 +427,18 @@ internal static unsafe class BlockDecompressor
 
     /// <summary>
     /// Decodes tags while at least 2 * <see cref="SlopBytes"/> of input and output remain, stopping before any
-    /// tag it cannot handle. On return <paramref name="ipRef"/> points at the next undecoded tag.
+    /// tag it cannot handle. The returned <see cref="Positions.Ip"/> points at the next undecoded tag.
     /// </summary>
     /// <remarks>
     /// Selects are written as mask arithmetic rather than conditionals so the JIT emits straight-line code, and
     /// the method has no stackalloc so it stays eligible for tiered (PGO) compilation.
+    /// The positions are passed by value and returned, not passed by reference: when dynamic PGO decides not to
+    /// inline this method (after a history of tiny blocks, where the call is rare), a by-reference ip/op would be
+    /// address-exposed in <see cref="DecompressTags"/> and its slow path would keep them in memory (measured on .NET
+    /// 11: 1KB html blocks 31-60% slower, 4KB 8-18%).
     /// </remarks>
-    private static void DecompressBranchless(ref byte* ipRef, byte* ipLimit, ref byte* opRef, byte* opBase, byte* opLimitMinSlop)
+    private static Positions DecompressBranchless(byte* ip, byte* ipLimit, byte* op, byte* opBase, byte* opLimitMinSlop)
     {
-        byte* ip = ipRef;
-        byte* op = opRef;
-
         // The caller checked that ipLimit - ip > BranchlessInputMargin and op < opLimitMinSlop - SlopBytes
         opLimitMinSlop -= SlopBytes;
 
@@ -470,8 +473,13 @@ internal static unsafe class BlockDecompressor
             op += deferredLength;
         }
 
-        ipRef = ip;
-        opRef = op;
+        return new Positions(ip, op);
+    }
+
+    private readonly struct Positions(byte* ip, byte* op)
+    {
+        public readonly byte* Ip = ip;
+        public readonly byte* Op = op;
     }
 
     /// <summary>
