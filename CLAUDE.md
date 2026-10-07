@@ -75,6 +75,12 @@ Decoder (`BlockDecompressor`, about 11 cycles/tag, of which about 8 are the tag-
 - Fewer instructions for the next-tag advance (single load, other ip formulas): within noise.
 - Running the fast loop closer to the input/output end (padded tail buffer, halved margins): no gain on 1-4KB blocks.
 - Handling long literals inside the fast loop: only 1-3 per block, nothing to gain.
+- Slow-path (input/output tail) tags decoded like the fast loop (table + masks + one 64 byte copy, no `switch`):
+  on 256 distinct messages 1 KB 11-16% and 4 KB 3-8% faster (the switch's jump table mispredicts), but on a
+  repeated html block 1 KB 11-16% and 4 KB 5-12% slower (more instructions per tag when the switch is predicted),
+  which made the repeated 4 KB SmallBlock case an 11% loss to Snappier. Replacing only the slow path's literal
+  `Memmove` call with a 64 byte copy: within noise. The tail is ~26% of a 1 KB message's tags and ~35% of its
+  decode time (perf), so a real fix needs the fast loop to cover the tail, not a cheaper slow path.
 
 Compressor (`BlockCompressor`, same algorithm and output size as Snappier):
 - klauspost/s2-style match finder: faster on text but 2-7% larger output and 43% slower on incompressible data.
