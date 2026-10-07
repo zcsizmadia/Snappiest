@@ -37,6 +37,10 @@ The `dotnet` CLI is at `C:\Program Files\dotnet\dotnet.exe` (not on PATH in Clau
   Default host `bench-host.example` (2x EPYC 7543, 128 threads, AVX2, no AVX-512). The script syncs the repo, builds
   once, and runs one in-process BenchmarkDotNet job per (class, file) pinned to its own physical core on NUMA node 1.
   `BENCH_JOB=short` for quick iteration (about +-10% noise), `medium` (default) for decisions.
+- .NET 11 benchmarks are left out until .NET 11 is released (the README covers .NET 8 and .NET 10). To bring them
+  back: add `net11.0` to the benchmark project's TargetFrameworks (with an SDK 11 condition while it is a preview),
+  and in `scripts/bench-remote.sh` select the installed SDK 11 for `net11.0` (the synced global.json pins SDK 10).
+  The commit that removed them shows both parts.
 
 ## Performance notes (learned the hard way)
 

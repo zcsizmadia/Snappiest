@@ -1,7 +1,7 @@
 // Turns the output of scripts/bench-remote.sh (one file per runtime) into Markdown tables comparing Snappier and
 // SnappySimd: one table per benchmark class, with a speedup column per runtime.
 //
-// Usage: node scripts/bench-table.mjs net8.0=out8.txt net10.0=out10.txt net11.0=out11.txt
+// Usage: node scripts/bench-table.mjs net8.0=out8.txt net10.0=out10.txt
 // Several runs of one runtime can be joined with "+" (net8.0=run1.txt+run2.txt): each library then gets its best
 // (lowest) mean across the runs.
 import { readFileSync } from 'node:fs';

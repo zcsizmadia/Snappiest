@@ -44,13 +44,6 @@ FRAMEWORK="$1"; CLASSES="$2"; CORES="$3"; JOB="$4"; LABEL="${5#_}"; NOSYNC="$6";
 export PATH="$HOME/.dotnet:$PATH" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 eval cd "$REMOTE_DIR"
 
-# net11.0 is preview: build it with the installed SDK 11 (the synced global.json pins SDK 10)
-if [[ "$FRAMEWORK" == net11.0 && "$NOSYNC" != 1 ]]; then
-  SDK11=$(dotnet --list-sdks | awk '/^11./{v=$1} END{print v}')
-  printf '{ "sdk": { "version": "%s", "rollForward": "latestFeature", "allowPrerelease": true } }
-' "$SDK11" > global.json
-fi
-
 [[ "$NOSYNC" == 1 ]] || dotnet build benchmarks/SnappySimd.Benchmarks -c Release -f "$FRAMEWORK" -v q -nologo | grep -E "error|Warn|Elapsed" || true
 DLL="benchmarks/SnappySimd.Benchmarks/bin/Release/$FRAMEWORK/SnappySimd.Benchmarks.dll"
 
