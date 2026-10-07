@@ -41,6 +41,86 @@ public class InteropTests
         await Assert.That((double)ours).IsLessThanOrEqualTo(theirs * 1.01);
     }
 
+    // Byte-identical output is not part of the contract (only "valid Snappy, never larger than Snappier"), but it
+    // holds today because both use google/snappy's CompressFragment; these tests notice if that changes on any CI
+    // platform, so the README statement can be kept accurate.
+    [Test]
+    [MethodDataSource(typeof(TestData), nameof(TestData.CorpusFiles))]
+    public async Task Block_IdenticalToSnappier(string filename)
+    {
+        byte[] input = TestData.Load(filename);
+
+        await Assert.That(TestData.Same(Snappier.Snappy.CompressToArray(input), Snappy.CompressToArray(input))).IsTrue();
+    }
+
+    [Test]
+    public async Task Block_IdenticalToSnappier_RandomSlices()
+    {
+        byte[][] corpus = [.. TestData.CorpusFiles().Select(TestData.Load)];
+        var random = new Random(11);
+        int different = 0;
+        for (int i = 0; i < 500; i++)
+        {
+            byte[] file = corpus[random.Next(corpus.Length)];
+            int length = Math.Min(file.Length, random.Next(4) switch
+            {
+                0 => random.Next(0, 300),
+                1 => random.Next(300, 5000),
+                2 => random.Next(5000, 70_000),
+                _ => random.Next(70_000, 300_000),
+            });
+            byte[] input = file.AsSpan(random.Next(file.Length - length + 1), length).ToArray();
+            if (!TestData.Same(Snappier.Snappy.CompressToArray(input), Snappy.CompressToArray(input)))
+            {
+                different++;
+            }
+        }
+
+        await Assert.That(different).IsEqualTo(0);
+    }
+
+    [Test]
+    [MethodDataSource(typeof(TestData), nameof(TestData.CorpusFiles))]
+    public async Task Stream_IdenticalToSnappier(string filename)
+    {
+        byte[] input = TestData.Load(filename);
+
+        foreach (string pattern in new[] { "one", "4k", "random+flush" })
+        {
+            byte[] ours = WriteStream(output => new SnappyStream(output, CompressionMode.Compress, true), input, pattern);
+            byte[] theirs = WriteStream(output => new Snappier.SnappyStream(output, CompressionMode.Compress, true), input, pattern);
+
+            await Assert.That(TestData.Same(theirs, ours)).IsTrue().Because(pattern);
+        }
+    }
+
+    private static byte[] WriteStream(Func<Stream, Stream> create, byte[] input, string pattern)
+    {
+        using var output = new MemoryStream();
+        using (Stream compressor = create(output))
+        {
+            var random = new Random(5);
+            for (int i = 0; i < input.Length;)
+            {
+                int count = pattern switch
+                {
+                    "one" => input.Length,
+                    "4k" => 4096,
+                    _ => random.Next(1, 150_000),
+                };
+                count = Math.Min(count, input.Length - i);
+                compressor.Write(input, i, count);
+                i += count;
+                if (pattern == "random+flush" && random.Next(4) == 0)
+                {
+                    compressor.Flush();
+                }
+            }
+        }
+
+        return output.ToArray();
+    }
+
     [Test]
     [MethodDataSource(typeof(TestData), nameof(TestData.CorpusFiles))]
     public async Task Stream_SnappySimdToSnappier(string filename)

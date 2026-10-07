@@ -28,10 +28,13 @@ hardware intrinsics for x64 and arm64.
 ```
 
 That's all: `Snappy` and `SnappyStream` have the same members, parameter names and exception types as in Snappier.
-Data compressed by either library decompresses with the other. The compressed bytes themselves are not guaranteed to
-be identical to Snappier's (the compressed size is the same or smaller). They can also differ between machines: CPUs with a
-CRC32 instruction use it as the hash function, others use a multiplicative hash. Every output is valid Snappy and
-decodes everywhere.
+Data compressed by either library decompresses with the other. Today the compressed bytes are also identical to
+Snappier 1.3.1's, for blocks and streams (including the opt-in parallel modes, whose output equals single-threaded): both
+use google/snappy's `CompressFragment`. This is checked by the test suite on x64 and arm64 CI runners and was verified on
+.NET 8 and 10 with and without AVX2 and hardware intrinsics. It is not a guarantee, though: the promise is valid Snappy
+that is never larger than Snappier's, and a future version may compress differently (for example smaller). Output can
+also differ between machines for both libraries: CPUs with a CRC32 instruction use it as the hash function, others use a
+multiplicative hash. Every output is valid Snappy and decodes everywhere.
 
 Small behaviour differences, all on invalid input or edge cases:
 
