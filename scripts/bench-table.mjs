@@ -56,6 +56,7 @@ const titles = {
   StreamBenchmarks: 'Streams (`SnappyStream`, whole file)',
   SmallBlockBenchmarks: 'Small messages (`Snappy`, first N bytes of the file)',
   CorpusBenchmarks: 'Whole corpus in one operation (all files)',
+  MessageMixBenchmarks: '256 different messages of each size, round-robin (time per message)',
 };
 
 for (const cls of classes) {
