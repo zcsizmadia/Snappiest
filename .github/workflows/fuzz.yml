@@ -28,12 +28,12 @@ jobs:
       # Kept short while the repository is private (Actions minutes are billed); raise when public
       SNAPPY_FUZZ_SECONDS: ${{ github.event.inputs.seconds || '60' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
       - run: dotnet test --project tests/SnappySimd.Tests -c Release -f net10.0 -- --treenode-filter "/*/*/*FuzzTests/*"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: fuzz-failures-${{ matrix.name }}
