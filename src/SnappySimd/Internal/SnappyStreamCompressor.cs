@@ -8,14 +8,17 @@ namespace SnappySimd.Internal;
 /// output buffer that is written to the stream once per <see cref="Write"/> call.
 /// </summary>
 /// <remarks>
-/// With parallel options, input is gathered into a batch of chunks (two per thread) and the chunks are compressed
+/// With parallel options, input is gathered into a batch of chunks (four per thread) and the chunks are compressed
 /// concurrently. Chunk boundaries are the same as single-threaded (every 64KB since the last flush), so the output
 /// is identical.
 /// </remarks>
 internal sealed class SnappyStreamCompressor : IDisposable
 {
     private const int ChunkOverhead = StreamFormat.ChunkHeaderLength + StreamFormat.ChecksumLength;
-    private const int ChunksPerThread = 2;
+
+    // Chunks per thread in a parallel batch. Each batch ends with a barrier and a serial pack and write, so small
+    // batches leave threads idle (2 per thread: 16 threads used ~6 cores); 8 per thread made 12 threads slower again.
+    private const int ChunksPerThread = 4;
 
     private static readonly int MaxChunkOutput =
         ChunkOverhead + VarInt.MaxLength + BlockCompressor.MaxFragmentLength(StreamFormat.MaxChunkDataLength);
@@ -44,8 +47,9 @@ internal sealed class SnappyStreamCompressor : IDisposable
 
     private int BatchOutputSize => _batchChunks * MaxChunkOutput;
 
-    // Room for the stream identifier and two batches
-    private int OutputBufferSize => StreamFormat.StreamHeader.Length + (2 * BatchOutputSize);
+    // Room for the stream identifier and two chunks when single-threaded; a parallel batch is large enough to be
+    // written on its own, which keeps the buffers at about two batches (input and output) per stream
+    private int OutputBufferSize => StreamFormat.StreamHeader.Length + ((_threads > 1 ? 1 : 2) * BatchOutputSize);
 
     public void Write(ReadOnlySpan<byte> input, Stream stream)
     {
@@ -55,10 +59,11 @@ internal sealed class SnappyStreamCompressor : IDisposable
 
     public async ValueTask WriteAsync(ReadOnlyMemory<byte> input, Stream stream, CancellationToken cancellationToken)
     {
+        bool largeWrite = input.Length >= BatchInputSize;
         while (!input.IsEmpty)
         {
             // Bound the buffered output so it can be written between batches
-            int consumed = CompressInputOnce(input.Span);
+            int consumed = CompressInputOnce(input.Span, largeWrite);
             input = input.Slice(consumed);
 
             if (_outputLength > OutputBufferSize - BatchOutputSize)
@@ -89,9 +94,10 @@ internal sealed class SnappyStreamCompressor : IDisposable
         EnsureBuffers();
         EnsureHeader();
 
+        bool largeWrite = input.Length >= BatchInputSize;
         while (!input.IsEmpty)
         {
-            int consumed = CompressInputOnce(input);
+            int consumed = CompressInputOnce(input, largeWrite);
             input = input.Slice(consumed);
 
             if (_outputLength > OutputBufferSize - BatchOutputSize)
@@ -102,7 +108,9 @@ internal sealed class SnappyStreamCompressor : IDisposable
     }
 
     /// <summary>Consumes input up to the next batch boundary, compressing the batch if it completes.</summary>
-    private int CompressInputOnce(ReadOnlySpan<byte> input)
+    /// <param name="input">The rest of the caller's write.</param>
+    /// <param name="largeWrite">The caller's write was at least a batch long.</param>
+    private int CompressInputOnce(ReadOnlySpan<byte> input, bool largeWrite)
     {
         EnsureBuffers();
         EnsureHeader();
@@ -113,6 +121,16 @@ internal sealed class SnappyStreamCompressor : IDisposable
             // Compress directly from the caller's buffer
             CompressChunks(input.Slice(0, batchInput));
             return batchInput;
+        }
+
+        if (_inputLength == 0 && largeWrite && input.Length >= StreamFormat.MaxChunkDataLength)
+        {
+            // The rest of a large write: compress its whole chunks from the caller's buffer as a smaller batch, and
+            // buffer only the last partial chunk. Copying a whole partial batch here (up to the batch size minus one
+            // chunk) on the calling thread made 24 threads slower than 16.
+            int whole = input.Length - (input.Length % StreamFormat.MaxChunkDataLength);
+            CompressChunks(input.Slice(0, whole));
+            return whole;
         }
 
         int append = Math.Min(input.Length, batchInput - _inputLength);
@@ -167,7 +185,7 @@ internal sealed class SnappyStreamCompressor : IDisposable
                 int inputLength = input.Length;
                 int slot = MaxChunkOutput;
 
-                Parallel.For(0, count, _parallelOptions, i =>
+                ParallelWork.For(count, _parallelOptions, i =>
                 {
                     int offset = i * StreamFormat.MaxChunkDataLength;
                     var chunk = new ReadOnlySpan<byte>((byte*)inputAddress + offset, Math.Min(StreamFormat.MaxChunkDataLength, inputLength - offset));

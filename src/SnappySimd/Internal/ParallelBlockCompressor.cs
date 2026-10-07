@@ -49,7 +49,7 @@ internal static unsafe class ParallelBlockCompressor
                     int count = Math.Min(batch, fragments - first);
                     int firstFragment = first;
 
-                    Parallel.For(0, count, parallelOptions, i =>
+                    ParallelWork.For(count, parallelOptions, i =>
                     {
                         int offset = (firstFragment + i) * BlockCompressor.BlockSize;
                         var source = new ReadOnlySpan<byte>((byte*)inputAddress + offset, Math.Min(BlockCompressor.BlockSize, inputLength - offset));

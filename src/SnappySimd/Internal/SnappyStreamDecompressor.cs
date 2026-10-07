@@ -237,7 +237,7 @@ internal sealed class SnappyStreamDecompressor : IDisposable
         int[] lengths = _slotLengths;
         Exception?[] errors = _slotErrors;
 
-        Parallel.For(0, count, _parallelOptions!, i =>
+        ParallelWork.For(count, _parallelOptions!, i =>
         {
             int offset = offsets[i];
             uint header = BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(offset));
