@@ -1,8 +1,6 @@
 # SnappySimd
 
 [![CI](https://github.com/zcsizmadia/SnappySimd/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zcsizmadia/SnappySimd/actions/workflows/ci.yml)
-[![Line coverage](https://zcsizmadia.github.io/SnappySimd/badge_linecoverage.svg)](https://zcsizmadia.github.io/SnappySimd/)
-[![Branch coverage](https://zcsizmadia.github.io/SnappySimd/badge_branchcoverage.svg)](https://zcsizmadia.github.io/SnappySimd/)
 [![NuGet](.github/badges/nuget.svg)](https://www.nuget.org/packages/SnappySimd)
 [![.NET 8.0 | 10.0](.github/badges/dotnet.svg)](https://dotnet.microsoft.com/download)
 [![License: BSD-3-Clause](.github/badges/license.svg)](LICENSE)
