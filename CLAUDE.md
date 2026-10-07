@@ -73,14 +73,29 @@ Decoder (`BlockDecompressor`, about 11 cycles/tag, of which about 8 are the tag-
 - Removing the one-tag deferred copy: 3-6% slower. Always copying 64 bytes instead of 32 or 64: up to 10% slower.
 - `?:` selects instead of mask arithmetic: the JIT emits branches, up to 32% slower on text.
 - Fewer instructions for the next-tag advance (single load, other ip formulas): within noise.
-- Running the fast loop closer to the input/output end (padded tail buffer, halved margins): no gain on 1-4KB blocks.
 - Handling long literals inside the fast loop: only 1-3 per block, nothing to gain.
 - Slow-path (input/output tail) tags decoded like the fast loop (table + masks + one 64 byte copy, no `switch`):
   on 256 distinct messages 1 KB 11-16% and 4 KB 3-8% faster (the switch's jump table mispredicts), but on a
-  repeated html block 1 KB 11-16% and 4 KB 5-12% slower (more instructions per tag when the switch is predicted),
-  which made the repeated 4 KB SmallBlock case an 11% loss to Snappier. Replacing only the slow path's literal
-  `Memmove` call with a 64 byte copy: within noise. The tail is ~26% of a 1 KB message's tags and ~35% of its
-  decode time (perf), so a real fix needs the fast loop to cover the tail, not a cheaper slow path.
+  repeated html block 1 KB 11-16% and 4 KB 5-12% slower. Replacing only the slow path's literal `Memmove` call
+  with a 64 byte copy: within noise. (Superseded: the fast loop now covers the tail, see below.)
+- Branch-free second half of `MemCopy64` (overlapping store instead of the `size > 32` branch): html +10%, alice29
+  +3%, 1 KB distinct +9%; the branch is well predicted (google/snappy keeps it too).
+- Decoding whole small blocks (<= 2-4 KB) into a padded scratch and copying out: repeated 1 KB html +10-14%, worse
+  than tail redirection. Tail scratch of 256 B / 1 KB instead of 128 B, or copying a short input whole (256 B):
+  slower (more live values per tag in the tail loop, bigger copy-out).
+
+The fast loop covers both tails. The last <= 130 input bytes are copied to a scratch followed by 0xFF sentinel
+tags (copy-4, exceptional for the fast loop), so the loop stops at the real end and a tag running past it is
+rejected as before. The last <= 127 output bytes are decoded by a second instantiation of the loop
+(`DecompressBranchless<Redirected>`) into a scratch holding the preceding 64 output bytes; copy sources before
+that prefix are redirected to the real output. 256 distinct 1 KB messages: 20% faster (net11 0.99x -> 1.21x
+Snappier); repeated tiny blocks pay (jpeg 200-256 B ~25% slower, repeated 1 KB html ~6%), because a perfectly
+predicted branchy slow path beats any branchless loop on repeated data. The earlier "padded tail buffer: no gain"
+verdict was wrong because it was judged on a repeated block; judge tail changes with distinct messages.
+- The scratch (704 B) lives in the `NoInlining` wrapper `DecompressTags`, not in the hot `DecompressCore`: a fixed
+  buffer in the hot method added a GS cookie check and stack copies of its pointer parameters (html +7%). The
+  wrapper must stay `NoInlining`: inlined into a caller without `SkipLocalsInit` the scratch was zeroed on every
+  call (+16-40 ns).
 
 Compressor (`BlockCompressor`, same algorithm and output size as Snappier):
 - klauspost/s2-style match finder: faster on text but 2-7% larger output and 43% slower on incompressible data.

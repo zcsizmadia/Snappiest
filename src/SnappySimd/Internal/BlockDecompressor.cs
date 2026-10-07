@@ -9,9 +9,9 @@ namespace SnappySimd.Internal;
 /// <remarks>
 /// The hot loop is a port of <c>DecompressBranchless</c> from google/snappy 1.3.x: tags are decoded through a
 /// length-minus-offset table so the common literal/copy split costs no unpredictable branches, and each copy is
-/// deferred by one tag so its loads overlap with decoding the next tag. Everything the fast loop cannot handle
-/// (long literals, 4-byte offsets, the last ~128 bytes of input or output, corrupt data) falls back to a fully
-/// bounds-checked loop.
+/// deferred by one tag so its loads overlap with decoding the next tag. The loop needs slop past its position, so
+/// the input tail is decoded from a padded copy and the output tail into a padded scratch buffer; everything else
+/// it cannot handle (long literals, 4-byte offsets, corrupt data) falls back to a fully bounds-checked loop.
 /// </remarks>
 internal static unsafe class BlockDecompressor
 {
@@ -24,6 +24,25 @@ internal static unsafe class BlockDecompressor
     // Input the fast loop needs before it can run (two tags plus their slop)
     private const int BranchlessInputMargin = 2 * (SlopBytes + 1);
 
+    // The last BranchlessInputMargin input bytes (which the fast loop stops short of) are decoded from a copy followed
+    // by 0xFF sentinel tags (copy-4, which the fast loop treats as exceptional), so the fast loop stops exactly at
+    // the end of the input instead of leaving the tail to the bounds-checked loop. The padding covers the loop's
+    // speculative reads past a tag. Copying a longer input tail (256 bytes) was slower on repeated small blocks.
+    private const int InputScratchSize = BranchlessInputMargin + (2 * SlopBytes);
+
+    // The last TailCapacity output bytes (at least the 2 * SlopBytes - 1 the fast loop's over-writes would run past
+    // the end of) are decoded into a scratch buffer behind a copy of the SlopBytes of output that precede them, so
+    // copies from just before the tail and the overlapping-copy path read from the scratch; copies from further back
+    // are redirected to the real output. After the tail: room for the over-writes of a pair of tags and the final
+    // deferred copy. A bigger tail (256 B to 1 KB, decoding small blocks through the scratch from the start) measured
+    // slower: the scratch loop keeps two more values live and the copy-out grows.
+    private const int TailPrefix = SlopBytes;
+    private const int TailCapacity = 2 * SlopBytes;
+    private const int TailScratchSize = TailPrefix + TailCapacity + (3 * SlopBytes);
+
+    // Input scratch followed by the output tail scratch, in the caller's frame
+    private const int ScratchSize = InputScratchSize + TailScratchSize;
+
     // Maximum ratio between uncompressed and compressed size: a 3 byte copy-2 tag expands to 64 bytes.
     private const int MaxExpansion = 22;
 
@@ -31,7 +50,6 @@ internal static unsafe class BlockDecompressor
     // spurious offset that keeps literals off the overlapping-copy path), and 0xFF (exceptional) for long
     // literals and copy-4.
     private static readonly short* s_lengthMinusOffset = BuildLengthMinusOffset();
-
 
     // For tests
     internal static short LengthMinusOffset(int tag) => s_lengthMinusOffset[(byte)tag];
@@ -171,6 +189,7 @@ internal static unsafe class BlockDecompressor
 
     /// <returns><c>true</c> if the tags decoded to exactly [opBase, opEnd).</returns>
     [SkipLocalsInit]
+    [MethodImpl(MethodImplOptions.NoInlining)]
     internal static bool DecompressTags(byte* ip, byte* ipEnd, byte* opBase, byte* opEnd)
     {
         // Blocks too small for the fast loop get their own method: with dynamic PGO, a method's profile decides how
@@ -180,20 +199,73 @@ internal static unsafe class BlockDecompressor
             return DecompressSmall(ip, ipEnd, opBase, opEnd);
         }
 
+        // The scratch lives in this frame, not in DecompressCore's: a method with a fixed-size buffer gets a stack
+        // guard check and keeps copies of its pointer parameters on the stack, which slowed the loops
+        Scratch scratch;
+        return DecompressCore(ip, ipEnd, opBase, opEnd, scratch.Data);
+    }
+
+    /// <summary>Decodes tags into [opBase, opEnd); <paramref name="scratch"/> is <see cref="ScratchSize"/> bytes.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool DecompressCore(byte* ip, byte* ipEnd, byte* opBase, byte* opEnd, byte* scratch)
+    {
         byte* op = opBase;
 
         // The fast loop may write SlopBytes past its position, so it must stop SlopBytes - 1 short of the end
         byte* opLimitMinSlop = opEnd - Math.Min(SlopBytes - 1, (nint)(opEnd - opBase));
 
+        // Where the output tail starts in its scratch, after the prefix
+        byte* tailScratch = scratch + InputScratchSize + TailPrefix;
+
         while (true)
         {
-            // Only enter the fast loop when it will decode at least one pair of tags: with dynamic PGO, calls that
-            // return at once would teach the JIT that the loop body is cold, which slows every later large input
-            if (ipEnd - ip > BranchlessInputMargin && op < opLimitMinSlop - SlopBytes)
+            nint remaining = (nint)(ipEnd - ip);
+            if (remaining >= 2 && op < opEnd)
             {
-                Positions after = DecompressBranchless(ip, ipEnd, op, opBase, opLimitMinSlop);
-                ip = after.Ip;
-                op = after.Op;
+                byte* fastIp = ip;
+                byte* fastLimit = ipEnd;
+                if (remaining <= BranchlessInputMargin)
+                {
+                    // Input tail: decode from a padded copy. The sentinel tags after it stop the loop at the end of
+                    // the input; a tag that runs past the end reads sentinel bytes and leaves ip beyond it.
+                    CopyInputTail(scratch, ip, remaining);
+                    fastIp = scratch;
+                    fastLimit = scratch + remaining + BranchlessInputMargin + 1;
+                }
+
+                if (opEnd - op > TailCapacity)
+                {
+                    // Far from the end of the output (so the loop will decode at least one pair of tags: with
+                    // dynamic PGO, calls that return at once would teach the JIT that the loop body is cold, which
+                    // slows every later large input)
+                    Positions after = DecompressBranchless<Direct>(fastIp, fastLimit, op, opBase, opLimitMinSlop, null, 0);
+                    ip += after.Ip - fastIp;
+                    op = after.Op;
+                }
+                else
+                {
+                    // Output tail: decode into the scratch behind a copy of the preceding output, with the limit
+                    // set so the loop runs while op + deferred length <= the end of the tail, then copy out
+                    nint prefix = Math.Min(TailPrefix, (nint)(op - opBase));
+                    CopyTailPrefix(tailScratch - prefix, op - prefix, prefix);
+                    nint delta = (nint)(op - tailScratch);
+                    Positions after = DecompressBranchless<Redirected>(fastIp, fastLimit, tailScratch, opBase - delta,
+                        tailScratch + (opEnd - op) + 1 + SlopBytes, tailScratch - prefix, delta);
+                    ip += after.Ip - fastIp;
+                    nint produced = (nint)(after.Op - tailScratch);
+                    if (produced > opEnd - op)
+                    {
+                        return false;
+                    }
+
+                    CopySmall(op, tailScratch, produced);
+                    op += produced;
+                }
+
+                if (ip > ipEnd)
+                {
+                    return false;
+                }
             }
 
             if (ip >= ipEnd)
@@ -283,6 +355,84 @@ internal static unsafe class BlockDecompressor
         }
 
         return op == opEnd;
+    }
+
+    private struct Scratch
+    {
+        public fixed byte Data[ScratchSize];
+    }
+
+    private interface ITailMode
+    {
+        static abstract bool Redirect { get; }
+    }
+
+    private readonly struct Direct : ITailMode
+    {
+        public static bool Redirect => false;
+    }
+
+    private readonly struct Redirected : ITailMode
+    {
+        public static bool Redirect => true;
+    }
+
+    /// <summary>Copies exactly <paramref name="count"/> (at most about a kilobyte) non-overlapping bytes.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void CopySmall(byte* dst, byte* src, nint count)
+    {
+        if (count >= 32)
+        {
+            // Whole 32 byte blocks, then the last 32 bytes (overlapping the previous block)
+            byte* s = src;
+            byte* d = dst;
+            for (nint n = count; n > 32; n -= 32, s += 32, d += 32)
+            {
+                SimdCopy.Copy32(s, d);
+            }
+
+            SimdCopy.Copy32(src + count - 32, dst + count - 32);
+        }
+        else if (count >= 16)
+        {
+            SimdCopy.Copy16(src, dst);
+            SimdCopy.Copy16(src + count - 16, dst + count - 16);
+        }
+        else
+        {
+            for (nint i = 0; i < count; i++)
+            {
+                dst[i] = src[i];
+            }
+        }
+    }
+
+    /// <summary>
+    /// Copies the last <paramref name="remaining"/> (2 to <see cref="BranchlessInputMargin"/>) input bytes to
+    /// <paramref name="tail"/> and follows them with sentinel tags.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void CopyInputTail(byte* tail, byte* ip, nint remaining)
+    {
+        CopySmall(tail, ip, remaining);
+        Unsafe.InitBlockUnaligned(tail + remaining, 0xFF, 2 * SlopBytes);
+    }
+
+    /// <summary>Copies the <paramref name="count"/> (at most <see cref="TailPrefix"/>) output bytes before the tail.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void CopyTailPrefix(byte* dst, byte* src, nint count)
+    {
+        if (count == TailPrefix)
+        {
+            SimdCopy.Copy64(src, dst);
+        }
+        else
+        {
+            for (nint i = 0; i < count; i++)
+            {
+                dst[i] = src[i];
+            }
+        }
     }
 
     /// <summary>Copies <paramref name="length"/> bytes from <paramref name="offset"/> back, over-copying only when there is room.</summary>
@@ -432,12 +582,16 @@ internal static unsafe class BlockDecompressor
     /// <remarks>
     /// Selects are written as mask arithmetic rather than conditionals so the JIT emits straight-line code, and
     /// the method has no stackalloc so it stays eligible for tiered (PGO) compilation.
-    /// The positions are passed by value and returned, not passed by reference: when dynamic PGO decides not to
-    /// inline this method (after a history of tiny blocks, where the call is rare), a by-reference ip/op would be
-    /// address-exposed in <see cref="DecompressTags"/> and its slow path would keep them in memory (measured on .NET
-    /// 11: 1KB html blocks 31-60% slower, 4KB 8-18%).
+    /// The positions are passed by value and returned, not passed by reference: if the JIT ever left this method as
+    /// a call, a by-reference ip/op would be address-exposed in the caller and its slow path would keep them in
+    /// memory (measured on .NET 11: 1KB html blocks 31-60% slower, 4KB 8-18%). Inlining is forced because the
+    /// profile-driven decision depended on the warmup history (after tiny blocks only, the tail-mode instance stayed
+    /// a call and 256 byte blocks took 54 instead of 33 ns); it costs nothing when the profile would inline anyway.
     /// </remarks>
-    private static Positions DecompressBranchless(byte* ip, byte* ipLimit, byte* op, byte* opBase, byte* opLimitMinSlop)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Positions DecompressBranchless<TMode>(byte* ip, byte* ipLimit, byte* op, byte* opBase, byte* opLimitMinSlop,
+        byte* redirectBound, nint delta)
+        where TMode : struct, ITailMode
     {
         // The caller checked that ipLimit - ip > BranchlessInputMargin and op < opLimitMinSlop - SlopBytes
         opLimitMinSlop -= SlopBytes;
@@ -457,8 +611,8 @@ internal static unsafe class BlockDecompressor
         // overhead (as in google/snappy).
         do
         {
-            if (!DecodeTag(ref ip, ref tag, ref op, ref deferredSrc, ref deferredLength, opBase, table, safeSource)
-                || !DecodeTag(ref ip, ref tag, ref op, ref deferredSrc, ref deferredLength, opBase, table, safeSource))
+            if (!DecodeTag<TMode>(ref ip, ref tag, ref op, ref deferredSrc, ref deferredLength, opBase, table, safeSource, redirectBound, delta)
+                || !DecodeTag<TMode>(ref ip, ref tag, ref op, ref deferredSrc, ref deferredLength, opBase, table, safeSource, redirectBound, delta))
             {
                 break;
             }
@@ -487,8 +641,9 @@ internal static unsafe class BlockDecompressor
     /// </summary>
     /// <returns><c>false</c>, with <paramref name="ip"/> just past the tag, if the tag needs the slow path.</returns>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool DecodeTag(ref byte* ip, ref nuint tag, ref byte* op, ref byte* deferredSrc, ref nuint deferredLength,
-        byte* opBase, short* table, byte* safeSource)
+    private static bool DecodeTag<TMode>(ref byte* ip, ref nuint tag, ref byte* op, ref byte* deferredSrc, ref nuint deferredLength,
+        byte* opBase, short* table, byte* safeSource, byte* redirectBound, nint delta)
+        where TMode : struct, ITailMode
     {
         byte* oldIp = ip;
         nint lengthMinusOffset = table[tag];
@@ -547,6 +702,12 @@ internal static unsafe class BlockDecompressor
             return false;
         }
 
+        if (TMode.Redirect)
+        {
+            // Output tail in its scratch: a source before the scratch's prefix is in the real output
+            copySrc += delta & ((nint)(copySrc - redirectBound) >> 63);
+        }
+
         byte* from = (byte*)(((nuint)oldIp & literalMask) | ((nuint)copySrc & ~literalMask));
         SimdCopy.MemCopy64(op, deferredSrc, deferredLength);
         op = opNext;
@@ -573,6 +734,10 @@ internal static unsafe class BlockDecompressor
 
     private static short* BuildLengthMinusOffset()
     {
+        // The JIT folds SimdCopy's table pointer into a constant only if that class is initialized when the decoder
+        // reaches Tier1; a run without overlapping copies would otherwise leave a class-init helper call on that path
+        RuntimeHelpers.RunClassConstructor(typeof(SimdCopy).TypeHandle);
+
         // 256 tag entries, then the four copy-offset masks in the same allocation
         short* table = (short*)NativeMemory.AlignedAlloc(OffsetMasks + 64, 64);
         ushort* masks = (ushort*)((byte*)table + OffsetMasks);
