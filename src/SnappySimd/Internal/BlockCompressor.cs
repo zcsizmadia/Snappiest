@@ -186,7 +186,9 @@ internal static unsafe class BlockCompressor
                 // Bytes in [nextEmit, ip) will be emitted as a literal
                 byte* nextEmit = ip++;
                 ulong data = 0;
-                byte* candidate;
+                // The table entry of the position being probed; it only becomes a pointer once it matches, so
+                // the compare that decides can address [baseIp + index] directly, one add less on its chain
+                nuint index;
 
                 // Heuristic match skipping: after 32 misses look at every other byte, after 32 more every third, ...
                 uint skip = 32;
@@ -200,25 +202,25 @@ internal static unsafe class BlockCompressor
                     nint i;
                     for (nint j = 0; j < 16; j += 4)
                     {
-                        if (Probe(table, mask, baseIp, (uint)probe, delta + j, out candidate))
+                        if (Probe(table, mask, baseIp, (uint)probe, delta + j, out index))
                         {
                             i = j;
                             goto LiteralThenMatch;
                         }
 
-                        if (Probe(table, mask, baseIp, (uint)(probe >> 8), delta + j + 1, out candidate))
+                        if (Probe(table, mask, baseIp, (uint)(probe >> 8), delta + j + 1, out index))
                         {
                             i = j + 1;
                             goto LiteralThenMatch;
                         }
 
-                        if (Probe(table, mask, baseIp, (uint)(probe >> 16), delta + j + 2, out candidate))
+                        if (Probe(table, mask, baseIp, (uint)(probe >> 16), delta + j + 2, out index))
                         {
                             i = j + 2;
                             goto LiteralThenMatch;
                         }
 
-                        if (Probe(table, mask, baseIp, (uint)(probe >> 24), delta + j + 3, out candidate))
+                        if (Probe(table, mask, baseIp, (uint)(probe >> 24), delta + j + 3, out index))
                         {
                             i = j + 3;
                             goto LiteralThenMatch;
@@ -255,9 +257,9 @@ internal static unsafe class BlockCompressor
                         goto EmitRemainder;
                     }
 
-                    candidate = baseIp + *entry;
+                    index = *entry;
                     *entry = (ushort)(ip - baseIp);
-                    if ((uint)data == Unsafe.ReadUnaligned<uint>(candidate))
+                    if ((uint)data == Unsafe.ReadUnaligned<uint>(baseIp + index))
                     {
                         break;
                     }
@@ -272,13 +274,41 @@ internal static unsafe class BlockCompressor
             EmitMatch:
                 do
                 {
-                    // Extend the match, then emit copies until the input right after it no longer matches
-                    byte* matchStart = ip;
-                    nuint matched = 4 + FindMatchLength(candidate + 4, ip + 4, ipEnd, ref data, out bool lessThan8);
-                    ip += matched;
-                    nuint offset = (nuint)(matchStart - candidate);
-                    op = lessThan8 ? EmitCopyLessThan12(op, offset, matched) : EmitCopy(op, offset, matched);
+                    // Extend the match, then emit copies until the input right after it no longer matches.
+                    // Few values stay live across the extension: it runs in a method that already keeps every
+                    // register busy, and a spilled ip or data would put a store forward on the critical chain.
+                    byte* candidate = baseIp + index;
+                    nuint matched;
+                    nuint offset;
+                    if (ip + 5 <= ipLimit)
+                    {
+                        // The common case, a match shorter than 12, is decided by the first 8 bytes after the
+                        // known 4 right here, so no flag has to be carried out of a helper.
+                        ulong a1 = Unsafe.ReadUnaligned<ulong>(candidate + 4);
+                        ulong a2 = Unsafe.ReadUnaligned<ulong>(ip + 4);
+                        if (a1 != a2)
+                        {
+                            matched = 4 + MismatchOffset(a2, Unsafe.ReadUnaligned<ulong>(ip + 8), a1 ^ a2, ref data);
+                            offset = (nuint)(ip - candidate);
+                            ip += matched;
+                            op = EmitCopyLessThan12(op, offset, matched);
+                            goto CopyEmitted;
+                        }
 
+                        matched = 12 + FindMatchLength(candidate + 12, ip + 12, ipLimit, ref data);
+                    }
+                    else
+                    {
+                        TailMatch tail = FindMatchLengthTail(candidate + 4, ip + 4, ipEnd);
+                        data = tail.Data;
+                        matched = 4 + tail.Length;
+                    }
+
+                    offset = (nuint)(ip - candidate);
+                    ip += matched;
+                    op = EmitCopy(op, offset, matched);
+
+                CopyEmitted:
                     if (ip >= ipLimit)
                     {
                         goto EmitRemainder;
@@ -287,10 +317,10 @@ internal static unsafe class BlockCompressor
                     // Also index ip - 1, which improves compression
                     *TableEntry(table, Unsafe.ReadUnaligned<uint>(ip - 1), mask) = (ushort)(ip - baseIp - 1);
                     ushort* entry = TableEntry(table, (uint)data, mask);
-                    candidate = baseIp + *entry;
+                    index = *entry;
                     *entry = (ushort)(ip - baseIp);
                 }
-                while ((uint)data == Unsafe.ReadUnaligned<uint>(candidate));
+                while ((uint)data == Unsafe.ReadUnaligned<uint>(baseIp + index));
             }
         }
 
@@ -305,92 +335,179 @@ internal static unsafe class BlockCompressor
 
     /// <summary>Looks up and replaces the table entry for one position, reporting whether its 4 bytes match.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool Probe(ushort* table, uint mask, byte* baseIp, uint dword, nint position, out byte* candidate)
+    private static bool Probe(ushort* table, uint mask, byte* baseIp, uint dword, nint position, out nuint index)
     {
         ushort* entry = TableEntry(table, dword, mask);
-        candidate = baseIp + *entry;
+        index = *entry;
         *entry = (ushort)position;
-        return Unsafe.ReadUnaligned<uint>(candidate) == dword;
+        return Unsafe.ReadUnaligned<uint>(baseIp + index) == dword;
     }
 
     /// <summary>
     /// Returns how many bytes match after the initial 4, and leaves at least 5 valid bytes of the input at the
-    /// end of the match in <paramref name="data"/>.
+    /// end of the match in <paramref name="data"/>. The main loop inlines the first 8 byte comparison itself
+    /// and calls <see cref="FindMatchLength(byte*, byte*, byte*, ref ulong)"/> or <see cref="FindMatchLengthTail"/>;
+    /// this is the same logic in one piece.
     /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static nuint FindMatchLength(byte* s1, byte* s2, byte* s2Limit, ref ulong data, out bool lessThan8)
     {
-        nuint matched = 0;
-
         if (s2 <= s2Limit - 16)
         {
             ulong a1 = Unsafe.ReadUnaligned<ulong>(s1);
             ulong a2 = Unsafe.ReadUnaligned<ulong>(s2);
             if (a1 != a2)
             {
-                ulong xor = a1 ^ a2;
-                int shift = BitOperations.TrailingZeroCount(xor);
-                ulong a3 = Unsafe.ReadUnaligned<ulong>(s2 + 4);
-                a2 = (uint)xor == 0 ? a3 : a2;
-                data = a2 >> (shift & (3 * 8));
                 lessThan8 = true;
-                return (nuint)(shift >> 3);
+                return MismatchOffset(a2, Unsafe.ReadUnaligned<ulong>(s2 + 4), a1 ^ a2, ref data);
             }
 
-            matched = 8;
-            s2 += 8;
-
+            lessThan8 = false;
+            return 8 + FindMatchLength(s1 + 8, s2 + 8, s2Limit - InputMarginBytes, ref data);
         }
 
-        while (s2 <= s2Limit - 16)
+        TailMatch tail = FindMatchLengthTail(s1, s2, s2Limit);
+        data = tail.Data;
+        lessThan8 = tail.Length < 8;
+        return tail.Length;
+    }
+
+    /// <summary>
+    /// For 8 byte words that differ: the number of leading equal bytes, leaving the input after them in
+    /// <paramref name="data"/>. <paramref name="a3"/> holds the input 4 bytes after <paramref name="a2"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static nuint MismatchOffset(ulong a2, ulong a3, ulong xor, ref ulong data)
+    {
+        // The next hash needs the input at the end of the match, which depends on the match length and so on
+        // the candidate load. Shifting the words loaded from the input (not from the candidate) by the length
+        // keeps those loads off that dependency chain; see google/snappy's FindMatchLength.
+        int shift = BitOperations.TrailingZeroCount(xor);
+        // All ones when the low 4 bytes are equal, so the shift stays below 32. Written as arithmetic
+        // because the JIT turns the equivalent ?: into a branch that mispredicts on text.
+        ulong fromA3 = (ulong)((long)((xor & 0xFFFFFFFF) - 1) >> 63);
+        data = (a2 ^ ((a2 ^ a3) & fromA3)) >> (shift & (3 * 8));
+        return (nuint)(shift >> 3);
+    }
+
+    /// <summary>
+    /// Extends a match whose first 8 bytes from <paramref name="s2"/> - 8 are known to match. The input ends
+    /// <see cref="InputMarginBytes"/> after <paramref name="limit"/>, the main loop's limit, which is passed
+    /// instead of the end so that the loop keeps one pointer less alive.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static nuint FindMatchLength(byte* s1, byte* s2, byte* limit, ref ulong data)
+    {
+        // One moving pointer: the candidate is always diff bytes behind it
+        nint diff = (nint)(s1 - s2);
+        byte* p = s2;
+        nuint n;
+
+        // Up to the vector threshold, the 8 byte compares are unrolled with a single bounds check: markup and
+        // text matches mostly end in the first few, where a loop's bookkeeping was a fifth of the work
+        if (p <= limit + (InputMarginBytes - (VectorMatchThreshold + 8)))
         {
-            ulong a1 = Unsafe.ReadUnaligned<ulong>(s1 + matched);
-            ulong a2 = Unsafe.ReadUnaligned<ulong>(s2);
-            if (a1 == a2)
+            if (Mismatch(p, diff, ref data, out n))
             {
-                s2 += 8;
-                matched += 8;
+                return n;
+            }
 
-                // Once a match is long, compare 32 bytes at a time. Doing this from the start costs more than it
-                // saves on the medium-length matches typical of text and markup.
-                if (Vector256.IsHardwareAccelerated && matched >= VectorMatchThreshold)
+            if (Mismatch(p + 8, diff, ref data, out n))
+            {
+                return 8 + n;
+            }
+
+            if (Mismatch(p + 16, diff, ref data, out n))
+            {
+                return 16 + n;
+            }
+
+            if (Mismatch(p + 24, diff, ref data, out n))
+            {
+                return 24 + n;
+            }
+
+            if (Mismatch(p + 32, diff, ref data, out n))
+            {
+                return 32 + n;
+            }
+
+            if (Mismatch(p + 40, diff, ref data, out n))
+            {
+                return 40 + n;
+            }
+
+            if (Mismatch(p + 48, diff, ref data, out n))
+            {
+                return 48 + n;
+            }
+
+            p += VectorMatchThreshold - 8;
+
+            // Once a match is long, compare 32 bytes at a time. Doing this from the start costs more than it
+            // saves on the medium-length matches typical of text and markup.
+            if (Vector256.IsHardwareAccelerated)
+            {
+                byte* vectorLimit = limit + (InputMarginBytes - 40);
+                while (p <= vectorLimit)
                 {
-                    while (s2 <= s2Limit - 40)
+                    uint differ = ~Vector256.Equals(Vector256.Load(p + diff), Vector256.Load(p)).ExtractMostSignificantBits();
+                    if (differ != 0)
                     {
-                        uint differ = ~Vector256.Equals(Vector256.Load(s1 + matched), Vector256.Load(s2)).ExtractMostSignificantBits();
-                        if (differ != 0)
-                        {
-                            nuint count = (nuint)BitOperations.TrailingZeroCount(differ);
-                            data = Unsafe.ReadUnaligned<ulong>(s2 + count);
-                            lessThan8 = false;
-                            return matched + count;
-                        }
-
-                        s2 += 32;
-                        matched += 32;
+                        nuint count = (nuint)BitOperations.TrailingZeroCount(differ);
+                        data = Unsafe.ReadUnaligned<ulong>(p + count);
+                        return (nuint)(p - s2) + count;
                     }
+
+                    p += 32;
                 }
             }
-            else
-            {
-                ulong xor = a1 ^ a2;
-                int shift = BitOperations.TrailingZeroCount(xor);
-                ulong a3 = Unsafe.ReadUnaligned<ulong>(s2 + 4);
-                a2 = (uint)xor == 0 ? a3 : a2;
-                data = a2 >> (shift & (3 * 8));
-                lessThan8 = false;
-                return matched + (nuint)(shift >> 3);
-            }
         }
 
+        byte* last = limit + (InputMarginBytes - 16);
+        while (p <= last)
+        {
+            if (Mismatch(p, diff, ref data, out n))
+            {
+                return (nuint)(p - s2) + n;
+            }
+
+            p += 8;
+        }
+
+        TailMatch tail = FindMatchLengthTail(p + diff, p, limit + InputMarginBytes);
+        data = tail.Data;
+        return (nuint)(p - s2) + tail.Length;
+    }
+
+    /// <summary>Compares 8 bytes at <paramref name="p"/> with those <paramref name="diff"/> bytes before it.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool Mismatch(byte* p, nint diff, ref ulong data, out nuint matched)
+    {
+        ulong a1 = Unsafe.ReadUnaligned<ulong>(p + diff);
+        ulong a2 = Unsafe.ReadUnaligned<ulong>(p);
+        if (a1 == a2)
+        {
+            matched = 0;
+            return false;
+        }
+
+        matched = MismatchOffset(a2, Unsafe.ReadUnaligned<ulong>(p + 4), a1 ^ a2, ref data);
+        return true;
+    }
+
+    /// <summary>
+    /// Byte by byte match extension for the last 16 bytes of the input. Not inlined, so it must not write the
+    /// caller's data through a ref (that would keep the caller's copy in memory); it returns the input after
+    /// the match instead, which is only valid when the match ends at least 8 bytes before the limit. Callers
+    /// never read it otherwise, as the match then ends past their main loop limit.
+    /// </summary>
+    private static TailMatch FindMatchLengthTail(byte* s1, byte* s2, byte* s2Limit)
+    {
+        nuint matched = 0;
+        ulong data = 0;
         while (s2 < s2Limit)
         {
-            if (s1[matched] == *s2)
-            {
-                s2++;
-                matched++;
-            }
-            else
+            if (s1[matched] != *s2)
             {
                 if (s2 <= s2Limit - 8)
                 {
@@ -399,10 +516,18 @@ internal static unsafe class BlockCompressor
 
                 break;
             }
+
+            s2++;
+            matched++;
         }
 
-        lessThan8 = matched < 8;
-        return matched;
+        return new TailMatch(matched, data);
+    }
+
+    private readonly struct TailMatch(nuint length, ulong data)
+    {
+        public readonly nuint Length = length;
+        public readonly ulong Data = data;
     }
 
     // In the main loop: may read 15 bytes past the literal and write 15 bytes past the output
@@ -459,15 +584,15 @@ internal static unsafe class BlockCompressor
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static byte* EmitCopyLessThan12(byte* op, nuint offset, nuint length)
     {
-        // Branch free choice between copy-1 and copy-2: offset < 2048 is hard to predict
-        uint u = (uint)((length << 2) + (offset << 8));
-        uint copy1 = unchecked((uint)(Copy1ByteOffset - (4 << 2)) + (uint)((offset >> 3) & 0xE0));
-        uint copy2 = unchecked((uint)(Copy2ByteOffset - (1 << 2)));
-        // All ones when offset < 2048
-        uint copy1Mask = (uint)((nint)(offset - 2048) >> 63);
-        u += (copy1 & copy1Mask) | (copy2 & ~copy1Mask);
+        // Branch free choice between copy-1 and copy-2: offset < 2048 is hard to predict. Starting from the
+        // copy-2 tag, the mask adds what turns it into copy-1: offset bits 8-10 and the tag and length bias.
+        const uint Copy2Bias = unchecked((uint)(Copy2ByteOffset - (1 << 2)));
+        const uint Copy1Bias = unchecked((uint)(Copy1ByteOffset - (4 << 2)));
+        nint copy1Mask = (nint)(offset - 2048) >> 63;
+        uint copy1Delta = (uint)((offset >> 3) & 0xE0) + unchecked(Copy1Bias - Copy2Bias);
+        uint u = (uint)((length << 2) + (offset << 8)) + Copy2Bias + (copy1Delta & (uint)copy1Mask);
         Unsafe.WriteUnaligned(op, u);
-        return op + 3 + (nint)(int)copy1Mask;
+        return op + 3 + copy1Mask;
     }
 
     // length in [12, 64]: always a copy-2. Writes 4 bytes, of which 3 matter.

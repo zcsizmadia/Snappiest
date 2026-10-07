@@ -87,6 +87,22 @@ Compressor (`BlockCompressor`, same algorithm and output size as Snappier):
 - Backward match extension / repeat-offset check: speed-neutral, 0.1% smaller. Not worth the code.
 - `AggressiveOptimization`: 2-12% slower (loses dynamic PGO). Branch-free copy emit for lengths 12-64: 1-2% slower.
 - Reusing the hash table between calls: clearing is about 2% of a 4KB message.
+- Vector (2x32 B) copy for the final long literal instead of `Buffer.MemoryCopy`: 20% slower on jpeg (glibc's
+  `rep movsb` wins at 64 KB). Reusing `data >> 8` as the first probe after a match ("preload"): no gain, and keeping
+  `data` live made the JIT spill it. Plain static instead of `[ThreadStatic]` hash table: no change.
+- Getting a cmov for the match-end select (any `?:` form) or dynamic PGO for `CompressFragment` (any runtime knob):
+  not possible; it always tiers with "Synthesized PGO". The select is mask arithmetic, which helps text and
+  distinct messages 7-15% but costs 2-4% on one repeated 16-64 KB html block (the predictor learns the branch).
+
+Compressor notes: the hot path is the match-to-match chain (hash -> table load -> candidate load -> compare,
+~30 cycles per match on html). The table keeps indices and candidates are addressed as `[baseIp + index]` (one add
+less on the chain), and the ref/inlining rule above applies here too (a `ref data` to the non-inlined tail helper
+made the JIT spill `data` before every hash). The method uses all 15 GPRs: count spills in the Tier1 listing
+(`grep -c rbp-`) after every change.
+
+Benchmark harness trap: a process pinned to one core sees one processor, and the runtime multiplies the 100 ms
+call-counting delay by 10, so hot methods run Tier0/OSR code for seconds. Set `DOTNET_TC_CallCountingDelayMs=0` or
+warm up for many seconds (BenchmarkDotNet's warmup hides it).
 
 CRC: 128-bit PCLMULQDQ folding is 1.8x slower than the CRC32 instruction on Zen 3; computing the CRC during decode
 gives no cache benefit (the output is L2-resident anyway).
