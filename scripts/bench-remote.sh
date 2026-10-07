@@ -5,7 +5,7 @@
 # Usage: scripts/bench-remote.sh [host] [framework] [classes] [extra BenchmarkDotNet args...]
 #   host       default bd-au1-jz001g3v
 #   framework  net10.0 (default) or net8.0
-#   classes    comma separated: Block,Stream,SmallBlock,Corpus,Crc (default Block,Stream,SmallBlock,Corpus)
+#   classes    comma separated: Block,Stream,SmallBlock,Messages,Corpus,Crc (default Block,Stream,SmallBlock,Corpus)
 # Env: BENCH_CORES   physical cores to use (default "33-63", NUMA node 1 on the EPYC host)
 #      BENCH_JOB     BenchmarkDotNet job (default "medium")
 #      BENCH_ENV     extra environment for the benchmark processes, e.g. "DOTNET_EnableAVX2=0"
@@ -69,6 +69,7 @@ for cls in "${CLS[@]}"; do
     Block)      for f in $ALL_FILES; do JOBS+=("BlockBenchmarks|$f"); done ;;
     Stream)     for f in alice29.txt fireworks.jpeg html_x_4 urls.10K json_api.json events.ndjson; do JOBS+=("StreamBenchmarks|$f"); done ;;
     SmallBlock) for f in html fireworks.jpeg; do JOBS+=("SmallBlockBenchmarks|$f"); done ;;
+    Messages)   JOBS+=("MessageMixBenchmarks|") ;;
     Corpus)     JOBS+=("CorpusBenchmarks|") ;;
     Crc)        JOBS+=("Crc32CBenchmarks|") ;;
     Parallel)   for f in json_api.json html_x_4 urls.10K; do JOBS+=("ParallelBenchmarks|$f"); done ;;
