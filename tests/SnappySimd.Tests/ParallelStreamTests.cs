@@ -216,6 +216,8 @@ public class ParallelStreamTests
     [Arguments(1)]
     [Arguments(3)]
     [Arguments(1000)]
+    [Arguments(200_000)] // several chunks per read: decoded straight into the caller's buffer
+    [Arguments(1 << 20)]
     public async Task ParallelRead_CorruptChunk_SameBytesBeforeTheError(int readSize)
     {
         byte[] input = Repeat(TestData.Load("json_api.json"), 1_000_000);
@@ -240,9 +242,10 @@ public class ParallelStreamTests
     }
 
     [Test]
-    [Arguments(1)]
-    [Arguments(4)]
-    public async Task CorruptChunk_ReadingAgainKeepsFailing(int threads)
+    [Arguments(1, 100_000)]
+    [Arguments(4, 100_000)]
+    [Arguments(4, 1 << 20)] // several chunks per read: decoded straight into the caller's buffer
+    public async Task CorruptChunk_ReadingAgainKeepsFailing(int threads, int bufferSize)
     {
         // A caller that catches the error and reads on must not silently skip the bad chunk
         byte[] input = Repeat(TestData.Load("json_api.json"), 1_000_000);
@@ -260,7 +263,7 @@ public class ParallelStreamTests
             ? new SnappyStream(new MemoryStream(compressed), CompressionMode.Decompress)
             : new SnappyStream(new MemoryStream(compressed), CompressionMode.Decompress, leaveOpen: false, Options(threads));
 
-        byte[] buffer = new byte[100_000];
+        byte[] buffer = new byte[bufferSize];
         int failures = 0;
         long returned = 0;
         for (int attempt = 0; attempt < 50; attempt++)

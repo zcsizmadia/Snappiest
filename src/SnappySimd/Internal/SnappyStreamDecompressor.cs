@@ -9,15 +9,15 @@ namespace SnappySimd.Internal;
 /// is decoded in one pass: directly into the caller's buffer when it fits, otherwise into an internal buffer.
 /// </summary>
 /// <remarks>
-/// With parallel options, a run of complete data chunks in the input buffer (up to two per thread) is decoded
-/// concurrently into per-chunk slots, which are then served in order. A failing chunk throws when reading reaches
-/// it, as in sequential decoding.
+/// With parallel options, a run of complete data chunks in the input buffer (up to four per thread) is decoded
+/// concurrently: straight into the caller's buffer when at least two of them fit, otherwise into per-chunk slots,
+/// which are then served in order. A failing chunk throws when reading reaches it, as in sequential decoding.
 /// </remarks>
 internal sealed class SnappyStreamDecompressor : IDisposable
 {
     // Holds at least one maximum size chunk plus read-ahead
     private const int SequentialInputBufferSize = 1 << 17;
-    private const int ChunksPerThread = 2;
+    private const int ChunksPerThread = 4;
 
     private readonly ParallelOptions? _parallelOptions;
     private readonly int _batchChunks;
@@ -113,9 +113,20 @@ internal sealed class SnappyStreamDecompressor : IDisposable
                 continue;
             }
 
-            if (_parallelOptions is not null && DecodeBatch(input))
+            if (_parallelOptions is not null)
             {
-                continue;
+                int direct = DecodeBatchInto(input, destination);
+                if (direct > 0)
+                {
+                    written += direct;
+                    destination = destination.Slice(direct);
+                    continue;
+                }
+
+                if (DecodeBatch(input))
+                {
+                    continue;
+                }
             }
 
             if (available < StreamFormat.ChunkHeaderLength)
@@ -198,6 +209,105 @@ internal sealed class SnappyStreamDecompressor : IDisposable
         }
 
         return written;
+    }
+
+    /// <summary>
+    /// Decodes a run of complete data chunks at the head of the input concurrently, straight into
+    /// <paramref name="destination"/>, when at least two of them fit. Copying decoded slots into the caller's buffer
+    /// on the reading thread was the serial bottleneck of parallel decompression.
+    /// </summary>
+    /// <returns>
+    /// The number of bytes written, or 0 if fewer than two chunks fit (or the first chunk fails). If a chunk fails,
+    /// the chunks before it are returned and its input stays unread, so the sequential path reports the error, as in
+    /// sequential decoding.
+    /// </returns>
+    private int DecodeBatchInto(byte[] input, Span<byte> destination)
+    {
+        int[] offsets = _batchOffsets;
+        int[] lengths = _slotLengths;
+        int count = 0;
+        int total = 0;
+        int position = _inputStart;
+
+        while (count < _batchChunks && _inputEnd - position >= StreamFormat.ChunkHeaderLength)
+        {
+            uint header = BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(position));
+            byte chunkType = (byte)header;
+            int chunkLength = (int)(header >> 8);
+            if ((chunkType != StreamFormat.CompressedData && chunkType != StreamFormat.UncompressedData)
+                || chunkLength < StreamFormat.ChecksumLength || chunkLength > StreamFormat.MaxDataChunkLength
+                || _inputEnd - position < StreamFormat.ChunkHeaderLength + chunkLength)
+            {
+                break;
+            }
+
+            int length;
+            try
+            {
+                length = GetChunkDataLength(chunkType, input.AsSpan(position + StreamFormat.ChunkHeaderLength, chunkLength), out _);
+            }
+            catch (InvalidDataException)
+            {
+                break; // the sequential path reports it when reading reaches it
+            }
+
+            if (destination.Length - total < length)
+            {
+                break;
+            }
+
+            offsets[count] = position;
+            lengths[count++] = total;
+            total += length;
+            position += StreamFormat.ChunkHeaderLength + chunkLength;
+        }
+
+        if (count < 2)
+        {
+            return 0;
+        }
+
+        // Spans cannot be captured by the worker lambda: pass the pinned address instead
+        int failed = count;
+        unsafe
+        {
+            fixed (byte* target = destination)
+            {
+                nint address = (nint)target;
+                int end = total;
+                ParallelWork.For(count, _parallelOptions!, i =>
+                {
+                    int offset = offsets[i];
+                    uint header = BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(offset));
+                    ReadOnlySpan<byte> chunk = input.AsSpan(offset + StreamFormat.ChunkHeaderLength, (int)(header >> 8));
+                    int start = lengths[i];
+                    int length = (i + 1 < count ? lengths[i + 1] : end) - start;
+                    try
+                    {
+                        GetChunkDataLength((byte)header, chunk, out int headerLength);
+                        DecodeChunk((byte)header, chunk, headerLength, new Span<byte>((byte*)address + start, length));
+                    }
+                    catch (InvalidDataException)
+                    {
+                        // Keep the first failing chunk
+                        int seen;
+                        while (i < (seen = Volatile.Read(ref failed)) && Interlocked.CompareExchange(ref failed, i, seen) != seen)
+                        {
+                        }
+                    }
+                });
+            }
+        }
+
+        if (failed < count)
+        {
+            // Return the chunks before the failing one; leave it unread
+            _inputStart = offsets[failed];
+            return lengths[failed];
+        }
+
+        _inputStart = position;
+        return total;
     }
 
     /// <summary>
