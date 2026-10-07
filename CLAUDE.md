@@ -49,13 +49,21 @@ The `dotnet` CLI is at `C:\Program Files\dotnet\dotnet.exe` (not on PATH in Clau
   in the caller so the loop method is only called when it will run. Benchmark mixed sizes in one process
   (SmallBlockBenchmarks does) to catch this; single-size benchmarks hide it.
 - Blocks whose compressed tags are too short for the fast loop (<= 130 bytes) go to their own `DecompressSmall`, so
-  streams of tiny messages get their own profile (64 B: 48 -> 40 ns). Don't route the main loop's slow path through
-  a helper taking `ref ip/op`: next to the fast loop (also `ref`) the JIT sometimes stopped enregistering them and
-  large blocks got 40% slower. `TieringBenchmarks` (runner class `Tiering`) measures decoding after large-only,
-  tiny-only and no warmup, each in its own process. 256 B-4 KB blocks still vary ~8-25% with that history; that is
-  dynamic PGO working as designed (it is worth 5-12% on large inputs).
+  streams of tiny messages get their own profile (64 B: 48 -> 40 ns). `TieringBenchmarks` (runner class `Tiering`)
+  measures decoding after large-only, tiny-only and no warmup, each in its own process.
+- **Never pass the decoder's `ip`/`op` by `ref` to a method that might not be inlined.** Whether the JIT inlines
+  depends on the PGO profile (after a history of tiny blocks the fast-loop call is "rare" and stays a call), and a
+  `ref` local of a non-inlined callee is address-exposed: the caller's whole slow path then keeps `ip`/`op` in
+  memory (`[rbp-0x30]`). This was the cause of the old "40% slower with a ref helper" and of the 1-4 KB html losses
+  on .NET 11 (1 KB: 236 -> 309-378 ns). `DecompressBranchless` takes them by value and returns a `Positions` struct.
+  Inline-only helpers (`AggressiveInlining`, like `DecodeTagChecked`) are fine.
 - Check codegen with `DOTNET_JitDisasm=<method> DOTNET_JitStdOutFile=/tmp/x.asm` on the remote host and look for
-  the `Tier1` listing.
+  the `Tier1` listing; `DOTNET_JitDisasmSummary=1` shows which methods tiered and whether they were inlined (a
+  much smaller Tier1 code size for the caller means a callee stopped being inlined). `perf` works on the remote host
+  (`perf stat -D <ms>` to skip warmup).
+- Benchmarks that decode **one block repeatedly** let the CPU's branch predictor learn its whole tag sequence:
+  Snappier's branchy decoder then gets ~2 mispredictions per 1500 tags and ties us on 4-64 KB html, while with 256
+  distinct blocks we are 1.3-1.6x faster. Don't chase repeated-block ties in the main loop; judge with distinct blocks.
 - Over-copying (16/32/64-byte vector stores past the end) is fine only inside the slop the callers guarantee; the
   guard-page tests catch violations.
 
