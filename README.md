@@ -15,6 +15,29 @@ hardware intrinsics for x64 and arm64.
   and every other conforming implementation.
 - Pure managed code, no native dependencies, trimming and Native AOT compatible.
 
+## Why a new library?
+
+Snappier is a solid, widely used port of google/snappy, and SnappySimd keeps its API on purpose. A separate library
+exists because the speed comes from changes that don't fit Snappier's constraints:
+
+- **.NET 8 and later only.** Snappier also targets .NET Framework 4.7.2 and .NET Standard 2.0. SnappySimd uses
+  `Vector256`, `Pclmulqdq.V256` (on .NET 10), static abstract interface members and other .NET 8+ features in its hot
+  paths, without a second implementation for older runtimes.
+- **The hot paths are rewritten, not tuned.** The decoder is a port of google/snappy's current branchless loop
+  (`DecompressBranchless`) that also covers the last bytes of each block, so small messages don't fall back to a slow
+  path; the compressor shortens its match-to-match dependency chain; the CRC-32C for streams combines carry-less
+  multiply folding with the CRC32 instruction. Bringing this to Snappier would mean replacing most of its core in a
+  series of large pull requests, while keeping a second code path for older runtimes.
+- **Measured against the JIT, not assumed.** Every change is benchmarked against Snappier and checked in the
+  generated machine code, and the dead ends are recorded so they aren't retried. The result: decompression 1.1-2.7x
+  and compression 1.04-1.5x faster than Snappier on whole files, and 1.3-1.7x / 1.14-1.23x on 256 different 1-64 KB
+  messages (see [Benchmarks](#benchmarks)).
+- **Opt-in parallelism.** `SnappyParallelOptions` compresses and decompresses large inputs on several threads with
+  output identical to single-threaded.
+
+What stays the same: the public API (change the namespace and you're done), the data format, and today even the
+compressed bytes (see below). If you need .NET Framework or .NET Standard support, Snappier remains the right choice.
+
 ## Migrating from Snappier
 
 ```diff
