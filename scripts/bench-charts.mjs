@@ -7,6 +7,7 @@
 // Charts (each as <name>-light.svg and <name>-dark.svg, shown with <picture> in the README):
 //   speedup       times faster than Snappier: block/stream x compress/decompress, one bar per file
 //   small         times faster than Snappier by message size (64 B - 64 KB), compress and decompress
+//   messages      times faster than Snappier for 256 different messages per size (1 KB - 64 KB)
 //   parallel      times faster than Snappier by thread count (opt-in parallel), json_api.json 16 MB
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
@@ -235,6 +236,27 @@ function smallChart(rows, theme) {
   return svg(width, height, theme, 'Small messages: times faster than Snappier by size', descParts.join('; '), body);
 }
 
+// ---------------------------------------------------------------- chart 4: distinct messages
+
+function messagesChart(rows, theme) {
+  const mix = rows.filter(r => r.cls === 'MessageMixBenchmarks');
+  const sizes = [...new Set(mix.map(r => Number(r.Size)))].sort((a, b) => a - b);
+  const label = s => (s >= 1024 ? `${s / 1024} KB` : `${s} B`);
+  const descParts = [];
+  const series = ['Decompress', 'Compress'].map(op => {
+    const values = speedup(mix, r => r.operation === op, r => Number(r.Size));
+    descParts.push(`${op}: ${sizes.map(s => `${label(s)} ${fmt(values.get(s))}`).join(', ')}`);
+    return { name: op, values: sizes.map(s => values.get(s) ?? null) };
+  });
+  const body = lineChart({
+    width: 960, height: 380, theme,
+    title: '256 different messages, round-robin',
+    subtitle: 'Times faster than Snappier per message; text, JSON, protobuf and tables from the corpus (line at 1× = Snappier)',
+    xLabels: sizes.map(label), xTitle: 'Message size', series,
+  });
+  return svg(960, 380, theme, 'Different messages: times faster than Snappier by size', descParts.join('; '), body);
+}
+
 // ---------------------------------------------------------------- chart 3: parallel scaling
 
 function parallelChart(rows, theme) {
@@ -272,6 +294,7 @@ const parallel = parse(read(parallelFile));
 for (const [name, theme] of Object.entries(THEMES)) {
   writeFileSync(`${outDir}/speedup-${name}.svg`, speedupChart(single, theme));
   writeFileSync(`${outDir}/small-${name}.svg`, smallChart(single, theme));
+  if (single.some(r => r.cls === 'MessageMixBenchmarks')) writeFileSync(`${outDir}/messages-${name}.svg`, messagesChart(single, theme));
   writeFileSync(`${outDir}/parallel-${name}.svg`, parallelChart(parallel, theme));
 }
-console.log(`Wrote speedup, small and parallel charts (light and dark) to ${outDir}`);
+console.log(`Wrote speedup, small, messages and parallel charts (light and dark) to ${outDir}`);
