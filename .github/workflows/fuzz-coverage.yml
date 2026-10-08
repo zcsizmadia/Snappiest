@@ -1,0 +1,60 @@
+name: Coverage-guided fuzz
+
+# SharpFuzz + libFuzzer (scripts/fuzz.sh), one job per target. The corpus is cached between runs, so every run
+# continues where the last one stopped; crash inputs are uploaded as artifacts (replay one with
+# `scripts/fuzz.sh replay <target> <file>`).
+on:
+  schedule:
+    - cron: '41 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: '600'
+      jobs:
+        description: libFuzzer workers per target
+        default: '2'
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [block, stream, compress]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      # Kept short while the repository is private (Actions minutes are billed); raise when public
+      FUZZ_SECONDS: ${{ github.event.inputs.seconds || '600' }}
+      FUZZ_JOBS: ${{ github.event.inputs.jobs || '2' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/cache/restore@v6
+        with:
+          path: .fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - run: scripts/fuzz.sh setup
+      - run: scripts/fuzz.sh build
+      - run: scripts/fuzz.sh seed
+      - run: scripts/fuzz.sh run ${{ matrix.target }} "$FUZZ_SECONDS"
+      # Keep the cached corpus small: only inputs that add coverage
+      - run: scripts/fuzz.sh merge ${{ matrix.target }}
+        if: ${{ !cancelled() }}
+      - uses: actions/cache/save@v6
+        if: ${{ !cancelled() }}
+        with:
+          path: .fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: |
+            .fuzz/crashes/${{ matrix.target }}/
+            .fuzz/logs/${{ matrix.target }}/
+          if-no-files-found: ignore

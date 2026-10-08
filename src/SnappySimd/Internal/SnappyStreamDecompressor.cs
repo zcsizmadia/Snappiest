@@ -115,8 +115,11 @@ internal sealed class SnappyStreamDecompressor : IDisposable
 
             if (_parallelOptions is not null)
             {
+                // Progress is consumed input, not written bytes: a batch of empty chunks writes nothing, and
+                // `available` is stale after any batch
+                int batchStart = _inputStart;
                 int direct = DecodeBatchInto(input, destination);
-                if (direct > 0)
+                if (_inputStart != batchStart)
                 {
                     written += direct;
                     destination = destination.Slice(direct);
@@ -217,7 +220,8 @@ internal sealed class SnappyStreamDecompressor : IDisposable
     /// on the reading thread was the serial bottleneck of parallel decompression.
     /// </summary>
     /// <returns>
-    /// The number of bytes written, or 0 if fewer than two chunks fit (or the first chunk fails). If a chunk fails,
+    /// The number of bytes written, which is 0 for a batch of empty chunks: callers detect progress by
+    /// <c>_inputStart</c> moving. Nothing is consumed if fewer than two chunks fit or the first chunk fails. If a chunk fails,
     /// the chunks before it are returned and its input stays unread, so the sequential path reports the error, as in
     /// sequential decoding.
     /// </returns>

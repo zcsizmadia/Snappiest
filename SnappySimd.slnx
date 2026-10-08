@@ -4,6 +4,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SnappySimd.Tests/SnappySimd.Tests.csproj" />
+    <Project Path="tests/SnappySimd.Fuzz/SnappySimd.Fuzz.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/SnappySimd.Benchmarks/SnappySimd.Benchmarks.csproj" />

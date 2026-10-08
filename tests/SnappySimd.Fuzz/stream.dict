@@ -1,0 +1,13 @@
+# libFuzzer dictionary for the stream target (Snappy framing format chunk headers)
+stream_identifier="\xff\x06\x00\x00sNaPpY"
+magic="sNaPpY"
+compressed_chunk="\x00"
+uncompressed_chunk="\x01"
+unskippable_chunk="\x02"
+skippable_chunk="\x80"
+padding_chunk="\xfe"
+empty_uncompressed="\x01\x04\x00\x00"
+empty_compressed="\x00\x05\x00\x00"
+max_uncompressed="\x01\x04\x00\x01"
+max_compressed="\x00\xd3\x2a\x01"
+empty_crc="\xd8\xea\x82\xa2"

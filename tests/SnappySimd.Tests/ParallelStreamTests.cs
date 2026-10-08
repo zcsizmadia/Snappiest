@@ -289,6 +289,34 @@ public class ParallelStreamTests
         await Assert.That(failures).IsGreaterThan(40);
     }
 
+    [Test]
+    [Arguments(0, 1 << 20)]
+    [Arguments(0, 3)]
+    [Arguments(5, 1 << 20)]
+    [Arguments(5, 3)] // the data chunk does not fit: the batch is the empty chunks only
+    [Arguments(65536, 1000)]
+    public async Task ParallelRead_EmptyDataChunks(int dataLength, int readSize)
+    {
+        // Found by coverage-guided fuzzing: a parallel batch of chunks that decode to nothing consumed its input but
+        // reported no progress, so the reader went on with a stale count of buffered bytes and failed
+        static byte[] Chunk(byte type, byte[] data, byte[] body) =>
+            [type, (byte)(body.Length + 4), (byte)((body.Length + 4) >> 8), (byte)((body.Length + 4) >> 16),
+             .. BitConverter.GetBytes(SnappySimd.Internal.Crc32C.ComputeMasked(data)), .. body];
+
+        byte[] data = Repeat(TestData.Load("alice29.txt"), dataLength);
+        byte[] empties = [.. Chunk(0x01, [], []), .. Chunk(0x00, [], [0]), .. Chunk(0x01, [], [])];
+        byte[] stream =
+        [
+            0xff, 0x06, 0x00, 0x00, .. "sNaPpY"u8,
+            .. empties,
+            .. dataLength > 0 ? Chunk(0x00, data, Snappy.CompressToArray(data)) : [],
+            .. empties,
+        ];
+
+        await Assert.That(TestData.Same(data, Decompress(stream, 1, readSize))).IsTrue();
+        await Assert.That(TestData.Same(data, Decompress(stream, 4, readSize))).IsTrue();
+    }
+
     private const int StreamFormatHeaderLength = 10;
 
     private static int ReadUntilError(byte[] compressed, int threads, int readSize)

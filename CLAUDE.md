@@ -32,6 +32,16 @@ The `dotnet` CLI is at `C:\Program Files\dotnet\dotnet.exe` (not on PATH in Clau
 - Build: `dotnet build -c Release`
 - Tests: `dotnet test --project tests/SnappySimd.Tests -c Release`
 - Coverage across CPU features: `scripts/coverage.sh` (merges default, `DOTNET_EnableAVX2=0`, `DOTNET_EnableHWIntrinsic=0`)
+- Coverage-guided fuzzing (SharpFuzz + libFuzzer, Linux only; `tests/SnappySimd.Fuzz`, targets `block`, `stream`,
+  `compress`): `scripts/fuzz.sh setup|build|seed`, then `scripts/fuzz.sh run <target> <seconds>`; work dir `.fuzz/`.
+  **Run it on the remote host, not this machine**: sync like `bench-remote.sh` does to a separate directory (e.g.
+  `~/snappysimd-fuzz`), `export PATH=$HOME/.dotnet:$PATH DOTNET_ROOT=$HOME/.dotnet`, and pin with
+  `FUZZ_CPUS=48-63 FUZZ_JOBS=<n>` so benchmarks on other cores are not disturbed. The host's glibc is too old for the
+  prebuilt libfuzzer-dotnet, so `setup` builds it from source with clang there. `cov:` in libFuzzer's output is
+  meaningless with this driver (coverage arrives as extra counters); watch `ft:`. A crash file replays with
+  `scripts/fuzz.sh replay <target> <file>`; fix the bug and add a TUnit regression test. Parallel paths run with
+  coverage recording off (worker threads make edges random), but their results are still checked.
+  Workflow: `.github/workflows/fuzz-coverage.yml` (weekly + manual, corpus in the Actions cache).
 - Benchmarks: **run on the remote host, not this machine** (the user works on this machine):
   `scripts/bench-remote.sh [host] [net10.0|net8.0] [Block,Stream,SmallBlock] [BenchmarkDotNet args]`.
   Default host `bench-host.example` (2x EPYC 7543, 128 threads, AVX2, no AVX-512). The script syncs the repo, builds

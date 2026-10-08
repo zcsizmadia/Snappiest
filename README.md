@@ -326,6 +326,20 @@ for longer runs (the nightly workflow does) and `SNAPPY_FUZZ_SEED` to replay a r
 SNAPPY_FUZZ_SECONDS=300 dotnet test --project tests/SnappySimd.Tests -c Release -- --treenode-filter "/*/*/*FuzzTests/*"
 ```
 
+Coverage-guided fuzzing (`tests/SnappySimd.Fuzz`, Linux x64) instruments SnappySimd with
+[SharpFuzz](https://github.com/Metalnem/sharpfuzz) and drives it with libFuzzer. Three targets: `block` (block
+decompression of arbitrary bytes through every entry point, checked against the spec decoder, with input and output
+next to guard pages), `stream` (framing-format decompression, single-threaded and parallel, checked against a spec
+framing decoder) and `compress` (block and stream round trips; parallel output must equal single-threaded).
+`scripts/fuzz.sh` installs the tools into `.fuzz/` (no root needed), builds, writes the seed corpus from `testdata/`
+and runs a target; the weekly `Coverage-guided fuzz` workflow does the same and keeps the corpus in the Actions cache:
+
+```shell
+scripts/fuzz.sh setup && scripts/fuzz.sh build && scripts/fuzz.sh seed
+FUZZ_JOBS=4 scripts/fuzz.sh run block 600        # new inputs in .fuzz/corpus, crashes in .fuzz/crashes
+scripts/fuzz.sh replay block .fuzz/crashes/block/crash-<sha1>   # reproduce one, prints the exception
+```
+
 ## License
 
 BSD-3-Clause. The compression and decompression loops are ported from

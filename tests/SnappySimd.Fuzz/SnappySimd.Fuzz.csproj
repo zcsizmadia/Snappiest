@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Coverage-guided fuzzing with SharpFuzz and libFuzzer (Linux). Not a test project: scripts/fuzz.sh publishes it,
+    instruments SnappySimd.dll with the sharpfuzz tool and runs it under libfuzzer-dotnet.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>false</IsTestProject>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Harness code: console output and plain exceptions are the reporting channel -->
+    <NoWarn>$(NoWarn);CA1303;CA1515;CA1822;CA2201</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpFuzz" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SnappySimd\SnappySimd.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared with the unit tests: the spec decoder used as the referee, and the guard-page buffer -->
+    <Compile Include="..\SnappySimd.Tests\Fuzz\ReferenceDecoder.cs" Link="Shared\ReferenceDecoder.cs" />
+    <Compile Include="..\SnappySimd.Tests\Infrastructure\GuardedBuffer.cs" Link="Shared\GuardedBuffer.cs" />
+  </ItemGroup>
+
+</Project>
