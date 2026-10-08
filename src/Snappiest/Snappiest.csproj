@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <PackageId>Snappiest</PackageId>
+    <Description>
+      High-performance Snappy compression for .NET 8+, using SIMD and hardware intrinsics on x64 and arm64.
+      API-compatible with Snappier: switch the namespace from Snappier to Snappiest.
+    </Description>
+    <PackageTags>snappy;compression;simd;fast;io</PackageTags>
+    <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
+    <Authors>zcsizmadia</Authors>
+    <Copyright>Copyright 2026 zcsizmadia and Snappiest contributors; portions copyright Google Inc.</Copyright>
+    <PackageProjectUrl>https://github.com/zcsizmadia/Snappiest</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/zcsizmadia/Snappiest</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <InternalsVisibleTo Include="Snappiest.Tests" />
+    <InternalsVisibleTo Include="Snappiest.Benchmarks" />
+  </ItemGroup>
+
+</Project>

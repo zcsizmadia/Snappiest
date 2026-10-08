@@ -26,4 +26,4 @@ jobs:
           dotnet-version: |
             8.0.x
             10.0.x
-      - run: dotnet test --project tests/SnappySimd.Tests -c Release
+      - run: dotnet test --project tests/Snappiest.Tests -c Release

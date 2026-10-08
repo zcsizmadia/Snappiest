@@ -1,4 +1,4 @@
-# SnappySimd
+# Snappiest
 
 High-performance Snappy (raw block + framing format) for .NET 8+, using SIMD and hardware intrinsics on x64 and arm64.
 
@@ -6,8 +6,8 @@ High-performance Snappy (raw block + framing format) for .NET 8+, using SIMD and
 
 - **Must beat Snappier** (NuGet `Snappier`, the main competitor) on speed. Any change to a hot path needs a
   before/after benchmark against Snappier; never trade correctness for speed.
-- **Drop-in migration from Snappier**: `SnappySimd.Snappy` and `SnappySimd.SnappyStream` keep Snappier's public type
-  names, member signatures, parameter names and exception types. Changing `using Snappier;` to `using SnappySimd;`
+- **Drop-in migration from Snappier**: `Snappiest.Snappy` and `Snappiest.SnappyStream` keep Snappier's public type
+  names, member signatures, parameter names and exception types. Changing `using Snappier;` to `using Snappiest;`
   must be the only code change. New APIs may be added, existing ones must not diverge.
   This is **source portability, not byte-for-byte output compatibility**: compressed output only has to be valid
   Snappy (readable by Snappier and google/snappy), so the compression algorithm may differ from Snappier's. Keep the
@@ -19,10 +19,10 @@ High-performance Snappy (raw block + framing format) for .NET 8+, using SIMD and
 
 ## Layout
 
-- `src/SnappySimd/` library. Hot paths are in `Internal/BlockDecompressor.cs` (port of Google's
+- `src/Snappiest/` library. Hot paths are in `Internal/BlockDecompressor.cs` (port of Google's
   `DecompressBranchless`), `Internal/BlockCompressor.cs` (`CompressFragment`), `Internal/SimdCopy.cs`, `Internal/Crc32C.cs`.
-- `tests/SnappySimd.Tests/` TUnit tests, including interop with the real Snappier package and guard-page tests.
-- `benchmarks/SnappySimd.Benchmarks/` BenchmarkDotNet, Snappier as the baseline.
+- `tests/Snappiest.Tests/` TUnit tests, including interop with the real Snappier package and guard-page tests.
+- `benchmarks/Snappiest.Benchmarks/` BenchmarkDotNet, Snappier as the baseline.
 - `testdata/` shared corpus (see its README for provenance).
 
 ## Commands
@@ -30,12 +30,12 @@ High-performance Snappy (raw block + framing format) for .NET 8+, using SIMD and
 The `dotnet` CLI is at `C:\Program Files\dotnet\dotnet.exe` (not on PATH in Claude Code shells).
 
 - Build: `dotnet build -c Release`
-- Tests: `dotnet test --project tests/SnappySimd.Tests -c Release`
+- Tests: `dotnet test --project tests/Snappiest.Tests -c Release`
 - Coverage across CPU features: `scripts/coverage.sh` (merges default, `DOTNET_EnableAVX2=0`, `DOTNET_EnableHWIntrinsic=0`)
-- Coverage-guided fuzzing (SharpFuzz + libFuzzer, Linux only; `tests/SnappySimd.Fuzz`, targets `block`, `stream`,
+- Coverage-guided fuzzing (SharpFuzz + libFuzzer, Linux only; `tests/Snappiest.Fuzz`, targets `block`, `stream`,
   `compress`): `scripts/fuzz.sh setup|build|seed`, then `scripts/fuzz.sh run <target> <seconds>`; work dir `.fuzz/`.
   **Run it on the remote host, not this machine**: sync like `bench-remote.sh` does to a separate directory (e.g.
-  `~/snappysimd-fuzz`), `export PATH=$HOME/.dotnet:$PATH DOTNET_ROOT=$HOME/.dotnet`, and pin with
+  `~/snappiest-fuzz`), `export PATH=$HOME/.dotnet:$PATH DOTNET_ROOT=$HOME/.dotnet`, and pin with
   `FUZZ_CPUS=48-63 FUZZ_JOBS=<n>` so benchmarks on other cores are not disturbed. The host's glibc is too old for the
   prebuilt libfuzzer-dotnet, so `setup` builds it from source with clang there. `cov:` in libFuzzer's output is
   meaningless with this driver (coverage arrives as extra counters); watch `ft:`. A crash file replays with
@@ -165,4 +165,4 @@ Parallel paths (`ParallelWork`, `SlotPacker`, the stream pipelines; 16 MB json o
 
 ## Git
 
-GitHub repo `zcsizmadia/SnappySimd`; commits use `zcsizmadia@gmail.com` (set in this repo's config).
+GitHub repo `zcsizmadia/Snappiest`; commits use `zcsizmadia@gmail.com` (set in this repo's config).

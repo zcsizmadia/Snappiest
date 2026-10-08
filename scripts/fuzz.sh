@@ -4,7 +4,7 @@
 #
 # Usage: scripts/fuzz.sh <command> [args]
 #   setup                       install sharpfuzz (SharpFuzz.CommandLine) and libfuzzer-dotnet (checksum verified)
-#   build                       publish tests/SnappySimd.Fuzz and instrument its SnappySimd.dll
+#   build                       publish tests/Snappiest.Fuzz and instrument its Snappiest.dll
 #   seed                        write the seed corpus (testdata blocks and streams, edge cases) to $FUZZ_DIR/seeds
 #   run <target> [seconds] [libFuzzer args...]
 #                               fuzz block, stream or compress (default 600 s); new inputs go to $FUZZ_DIR/corpus,
@@ -50,7 +50,7 @@ check_target() {
 target_flags() {
   case "$1" in
     block)    echo "-max_len=65536" ;;
-    stream)   echo "-max_len=131072 -dict=$ROOT/tests/SnappySimd.Fuzz/stream.dict" ;;
+    stream)   echo "-max_len=131072 -dict=$ROOT/tests/Snappiest.Fuzz/stream.dict" ;;
     compress) echo "-max_len=70000" ;;
   esac
 }
@@ -95,21 +95,21 @@ download() {
 
 cmd_build() {
   [[ -x "$TOOLS/sharpfuzz" ]] || die "run '$0 setup' first"
-  # Instrumentation rewrites the published SnappySimd.dll in place: always publish afresh
+  # Instrumentation rewrites the published Snappiest.dll in place: always publish afresh
   rm -rf "$BIN"
-  "$DOTNET" publish tests/SnappySimd.Fuzz -c Release -o "$BIN" -v q -nologo
+  "$DOTNET" publish tests/Snappiest.Fuzz -c Release -o "$BIN" -v q -nologo
   # The tool may target an older runtime than the installed one
-  DOTNET_ROLL_FORWARD=Major "$TOOLS/sharpfuzz" "$BIN/SnappySimd.dll"
-  echo "Instrumented $BIN/SnappySimd.dll"
+  DOTNET_ROLL_FORWARD=Major "$TOOLS/sharpfuzz" "$BIN/Snappiest.dll"
+  echo "Instrumented $BIN/Snappiest.dll"
 }
 
 cmd_seed() {
-  [[ -x "$BIN/SnappySimd.Fuzz" ]] || die "run '$0 build' first"
+  [[ -x "$BIN/Snappiest.Fuzz" ]] || die "run '$0 build' first"
   rm -rf "$FUZZ_DIR/seeds"
-  "$BIN/SnappySimd.Fuzz" seeds "$ROOT/testdata" "$FUZZ_DIR/seeds"
-  # Inputs saved by the unit-test fuzzers (tests/SnappySimd.Tests/bin/*/*/fuzz-failures) are worth keeping too
+  "$BIN/Snappiest.Fuzz" seeds "$ROOT/testdata" "$FUZZ_DIR/seeds"
+  # Inputs saved by the unit-test fuzzers (tests/Snappiest.Tests/bin/*/*/fuzz-failures) are worth keeping too
   local file
-  for file in tests/SnappySimd.Tests/bin/*/*/fuzz-failures/*.bin; do
+  for file in tests/Snappiest.Tests/bin/*/*/fuzz-failures/*.bin; do
     [[ -f "$file" ]] || continue
     case "$(basename "$file")" in
       RoundTrip*) cp "$file" "$FUZZ_DIR/seeds/compress/" ;;
@@ -127,7 +127,7 @@ cmd_run() {
   check_target "$target"
   local seconds="${1:-600}"; shift || true
   [[ -x "$TOOLS/libfuzzer-dotnet" ]] || die "run '$0 setup' first"
-  [[ -x "$BIN/SnappySimd.Fuzz" ]] || die "run '$0 build' first"
+  [[ -x "$BIN/Snappiest.Fuzz" ]] || die "run '$0 build' first"
   [[ -d "$FUZZ_DIR/seeds/$target" ]] || die "run '$0 seed' first"
 
   local corpus="$FUZZ_DIR/corpus/$target" crashes="$FUZZ_DIR/crashes/$target" logs="$FUZZ_DIR/logs/$target"
@@ -142,7 +142,7 @@ cmd_run() {
   # allocation fails as an OutOfMemoryException crash instead of taking the machine down
   # shellcheck disable=SC2046,SC2086
   (cd "$logs" && env DOTNET_GCHeapHardLimit=0x80000000 ${FUZZ_ENV:-} "${pin[@]}" "$TOOLS/libfuzzer-dotnet" \
-    --target_path="$BIN/SnappySimd.Fuzz" --target_arg="$target" \
+    --target_path="$BIN/Snappiest.Fuzz" --target_arg="$target" \
     $(target_flags "$target") -timeout=30 -rss_limit_mb=4096 -max_total_time="$seconds" \
     -print_final_stats=1 -artifact_prefix="$crashes/" "${parallel[@]}" "$@" \
     "$corpus" "$FUZZ_DIR/seeds/$target") \
@@ -165,10 +165,10 @@ cmd_merge() {
     echo "$target: no corpus to merge"
     return 0
   fi
-  [[ -x "$BIN/SnappySimd.Fuzz" ]] || die "run '$0 build' first"
+  [[ -x "$BIN/Snappiest.Fuzz" ]] || die "run '$0 build' first"
   rm -rf "$merged"; mkdir -p "$merged"
   # shellcheck disable=SC2046
-  "$TOOLS/libfuzzer-dotnet" --target_path="$BIN/SnappySimd.Fuzz" --target_arg="$target" \
+  "$TOOLS/libfuzzer-dotnet" --target_path="$BIN/Snappiest.Fuzz" --target_arg="$target" \
     $(target_flags "$target") -timeout=30 -merge=1 "$merged" "$corpus"
   rm -rf "$corpus"; mv "$merged" "$corpus"
   echo "$target: corpus $(find "$corpus" -type f | wc -l) file(s)"
@@ -178,7 +178,7 @@ cmd_replay() {
   local target="${1:?target}"; shift
   check_target "$target"
   (( $# > 0 )) || die "no inputs given"
-  "$BIN/SnappySimd.Fuzz" "$target" "$@"
+  "$BIN/Snappiest.Fuzz" "$target" "$@"
 }
 
 command="${1:-}"; shift || true

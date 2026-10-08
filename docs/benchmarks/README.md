@@ -1,7 +1,7 @@
 # Full benchmark results
 
 AMD EPYC 7543 (Zen 3, AVX2), Ubuntu 22.04, BenchmarkDotNet 0.16 (medium job, in-process, one benchmark process per
-physical core). Snappier 1.3.1 is the baseline; speedup is Snappier time / SnappySimd time.
+physical core). Snappier 1.3.1 is the baseline; speedup is Snappier time / Snappiest time.
 Small-message results are the best of two runs for each library; everything else is a single run.
 
 Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs` (the SVG charts in this folder) from
@@ -11,7 +11,7 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | alice29.txt | 353 µs | 292 µs | **1.21x** | 332 µs | 267 µs | **1.24x** |
 | asyoulik.txt | 316 µs | 267 µs | **1.19x** | 292 µs | 226 µs | **1.29x** |
@@ -30,7 +30,7 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | alice29.txt | 117 µs | 87.1 µs | **1.34x** | 113 µs | 89.9 µs | **1.26x** |
 | asyoulik.txt | 105 µs | 78.3 µs | **1.34x** | 102 µs | 81.0 µs | **1.26x** |
@@ -51,13 +51,13 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | all files | 7.62 ms | 6.52 ms | **1.17x** | 7.36 ms | 6.39 ms | **1.15x** |
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | all files | 3.02 ms | 1.79 ms | **1.69x** | 2.90 ms | 1.78 ms | **1.63x** |
 
@@ -65,7 +65,7 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1024 B | 1.4 µs | 1.2 µs | **1.19x** | 1.4 µs | 1.1 µs | **1.23x** |
 | 4096 B | 6.3 µs | 5.5 µs | **1.16x** | 6.2 µs | 5.4 µs | **1.15x** |
@@ -74,7 +74,7 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1024 B | 518 ns | 356 ns | **1.46x** | 461 ns | 343 ns | **1.34x** |
 | 4096 B | 2.5 µs | 1.5 µs | **1.61x** | 2.3 µs | 1.5 µs | **1.49x** |
@@ -85,7 +85,7 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | fireworks.jpeg 64 B | 137 ns | 78 ns | **1.75x** | 115 ns | 71 ns | **1.61x** |
 | fireworks.jpeg 200 B | 272 ns | 177 ns | **1.54x** | 238 ns | 171 ns | **1.39x** |
@@ -104,7 +104,7 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | fireworks.jpeg 64 B | 89 ns | 35 ns | **2.56x** | 84 ns | 34 ns | **2.51x** |
 | fireworks.jpeg 200 B | 131 ns | 91 ns | **1.45x** | 127 ns | 89 ns | **1.42x** |
@@ -123,7 +123,7 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **RoundTripArray**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | fireworks.jpeg 64 B | 298 ns | 173 ns | **1.73x** | 251 ns | 157 ns | **1.60x** |
 | fireworks.jpeg 200 B | 500 ns | 345 ns | **1.45x** | 447 ns | 341 ns | **1.31x** |
@@ -144,7 +144,7 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | alice29.txt | 384 µs | 302 µs | **1.27x** | 357 µs | 275 µs | **1.30x** |
 | events.ndjson | 970 µs | 751 µs | **1.29x** | 919 µs | 717 µs | **1.28x** |
@@ -155,7 +155,7 @@ Generated with `scripts/bench-table.mjs` (tables) and `scripts/bench-charts.mjs`
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | alice29.txt | 142 µs | 94.9 µs | **1.50x** | 140 µs | 93.8 µs | **1.49x** |
 | events.ndjson | 456 µs | 276 µs | **1.65x** | 459 µs | 253 µs | **1.82x** |

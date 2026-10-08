@@ -11,7 +11,7 @@
 #      BENCH_ENV     extra environment for the benchmark processes, e.g. "DOTNET_EnableAVX2=0"
 #      BENCH_LABEL   suffix for the results directory
 #      BENCH_NOSYNC  1 to skip syncing and building (when running several configurations at once)
-#      BENCH_REMOTE_DIR  remote working copy (default ~/snappysimd); use another for experiments
+#      BENCH_REMOTE_DIR  remote working copy (default ~/snappiest); use another for experiments
 set -euo pipefail
 
 HOST="${1:-bench-host.example}"
@@ -24,7 +24,7 @@ JOB="${BENCH_JOB:-medium}"
 BENCH_ENV="${BENCH_ENV:-}"
 LABEL="${BENCH_LABEL:-}"
 NOSYNC="${BENCH_NOSYNC:-0}"
-REMOTE_DIR="${BENCH_REMOTE_DIR:-~/snappysimd}"
+REMOTE_DIR="${BENCH_REMOTE_DIR:-~/snappiest}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -44,8 +44,8 @@ FRAMEWORK="$1"; CLASSES="$2"; CORES="$3"; JOB="$4"; LABEL="${5#_}"; NOSYNC="$6";
 export PATH="$HOME/.dotnet:$PATH" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 eval cd "$REMOTE_DIR"
 
-[[ "$NOSYNC" == 1 ]] || dotnet build benchmarks/SnappySimd.Benchmarks -c Release -f "$FRAMEWORK" -v q -nologo | grep -E "error|Warn|Elapsed" || true
-DLL="benchmarks/SnappySimd.Benchmarks/bin/Release/$FRAMEWORK/SnappySimd.Benchmarks.dll"
+[[ "$NOSYNC" == 1 ]] || dotnet build benchmarks/Snappiest.Benchmarks -c Release -f "$FRAMEWORK" -v q -nologo | grep -E "error|Warn|Elapsed" || true
+DLL="benchmarks/Snappiest.Benchmarks/bin/Release/$FRAMEWORK/Snappiest.Benchmarks.dll"
 
 # Expand the core list ("33-63" or "33,35,40-45")
 CORE_LIST=()
@@ -89,7 +89,7 @@ for j in "${JOBS[@]}"; do
     PARALLEL_JOB=$((PARALLEL_JOB + 1))
   fi
   name="$cls${file:+-$file}"
-  ( env $BENCH_ENV BENCH_FILES="$file" BENCH_WARMUP="$file" taskset -c "$core" dotnet "$DLL" --filter "SnappySimd.Benchmarks.$cls.*" \
+  ( env $BENCH_ENV BENCH_FILES="$file" BENCH_WARMUP="$file" taskset -c "$core" dotnet "$DLL" --filter "Snappiest.Benchmarks.$cls.*" \
       --inProcess --job "$JOB" --artifacts "$RUN/$name" --exporters github $EXTRA_ARGS > "$RUN/$name.log" 2>&1 \
     || echo "FAILED: $name (see $RUN/$name.log)" ) &
   i=$((i + 1))

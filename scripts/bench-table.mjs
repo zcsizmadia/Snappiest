@@ -1,5 +1,5 @@
 // Turns the output of scripts/bench-remote.sh (one file per runtime) into Markdown tables comparing Snappier and
-// SnappySimd: one table per benchmark class, with a speedup column per runtime.
+// Snappiest: one table per benchmark class, with a speedup column per runtime.
 //
 // Usage: node scripts/bench-table.mjs net8.0=out8.txt net10.0=out10.txt
 // Several runs of one runtime can be joined with "+" (net8.0=run1.txt+run2.txt): each library then gets its best
@@ -64,7 +64,7 @@ for (const cls of classes) {
   console.log(`### ${titles[cls] ?? cls}\n`);
   for (const operation of operations) {
     const params = [...new Set(data.flatMap(d => d.rows.filter(r => r.cls === cls && r.operation === operation).map(r => r.param)))];
-    const header = ['Input', ...data.flatMap(d => [`Snappier (${d.runtime})`, `SnappySimd (${d.runtime})`, 'Speedup'])];
+    const header = ['Input', ...data.flatMap(d => [`Snappier (${d.runtime})`, `Snappiest (${d.runtime})`, 'Speedup'])];
     console.log(`**${operation}**\n`);
     console.log(`| ${header.join(' | ')} |`);
     console.log(`|${header.map((_, i) => (i === 0 ? ' --- ' : ' ---: ')).join('|')}|`);
@@ -72,7 +72,7 @@ for (const cls of classes) {
       const cells = [param];
       for (const d of data) {
         const find = lib => d.rows.find(r => r.cls === cls && r.operation === operation && r.param === param && r.library === lib);
-        const a = find('Snappier'), b = find('SnappySimd');
+        const a = find('Snappier'), b = find('Snappiest');
         if (!a || !b) { cells.push('', '', ''); continue; }
         const x = toNs(a.mean), y = toNs(b.mean);
         cells.push(format(x), format(y), `**${(x / y).toFixed(2)}x**`);

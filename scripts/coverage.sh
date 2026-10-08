@@ -20,10 +20,10 @@ mkdir -p "$OUT"
 [[ -n "$MERGE_WITH" ]] && cp "$MERGE_WITH" "$OUT/coverage.json"
 
 "$DOTNET" tool restore >/dev/null
-"$DOTNET" build tests/SnappySimd.Tests -c Release -f "$FRAMEWORK" -v q -nologo
+"$DOTNET" build tests/Snappiest.Tests -c Release -f "$FRAMEWORK" -v q -nologo
 
-BIN="$ROOT/tests/SnappySimd.Tests/bin/Release/$FRAMEWORK"
-EXE="$BIN/SnappySimd.Tests"
+BIN="$ROOT/tests/Snappiest.Tests/bin/Release/$FRAMEWORK"
+EXE="$BIN/Snappiest.Tests"
 [[ -f "$EXE.exe" ]] && EXE="$EXE.exe"
 if command -v cygpath >/dev/null 2>&1; then
   BIN="$(cygpath -w "$BIN")"; EXE="$(cygpath -w "$EXE")"; OUTW="$(cygpath -w "$OUT")\\"
@@ -36,7 +36,7 @@ for cfg in default:_ noavx2:DOTNET_EnableAVX2=0 nohw:DOTNET_EnableHWIntrinsic=0;
   merge=()
   [[ -f "$OUT/coverage.json" ]] && merge=(--merge-with "$OUT/coverage.json")
   echo "== $name"
-  env $envv "$DOTNET" tool run coverlet "$BIN" --target "$EXE" --include "[SnappySimd]*" \
+  env $envv "$DOTNET" tool run coverlet "$BIN" --target "$EXE" --include "[Snappiest]*" \
     --format json --format cobertura --output "$OUTW" "${merge[@]}" | grep -E "failed:|succeeded:|^\| Total"
 done
 

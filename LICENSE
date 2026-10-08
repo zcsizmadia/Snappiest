@@ -1,6 +1,6 @@
 BSD 3-Clause License
 
-Copyright (c) 2026, zcsizmadia and SnappySimd contributors
+Copyright (c) 2026, zcsizmadia and Snappiest contributors
 Portions copyright 2011-2026, Google Inc. (the Snappy algorithm and reference implementation,
 https://github.com/google/snappy, from which the compression and decompression loops are ported)
 All rights reserved.

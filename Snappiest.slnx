@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Snappiest/Snappiest.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Snappiest.Tests/Snappiest.Tests.csproj" />
+    <Project Path="tests/Snappiest.Fuzz/Snappiest.Fuzz.csproj" />
+  </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Snappiest.Benchmarks/Snappiest.Benchmarks.csproj" />
+  </Folder>
+</Solution>

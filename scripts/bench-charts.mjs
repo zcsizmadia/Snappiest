@@ -59,10 +59,10 @@ function toNs(mean) {
   return parseFloat(m[1]) * { ns: 1, 'μs': 1e3, us: 1e3, ms: 1e6, s: 1e9 }[m[2]];
 }
 
-// Snappier time / SnappySimd time for rows that match on everything but the library
+// Snappier time / Snappiest time for rows that match on everything but the library
 function speedup(rows, filter, key) {
   const result = new Map();
-  for (const r of rows.filter(r => filter(r) && r.library === 'SnappySimd')) {
+  for (const r of rows.filter(r => filter(r) && r.library === 'Snappiest')) {
     const base = rows.find(b => filter(b) && b.library === 'Snappier' && b.operation === r.operation && key(b) === key(r));
     if (base) result.set(key(r), base.ns / r.ns);
   }
@@ -116,7 +116,7 @@ function speedupChart(rows, theme) {
   let y = 64;
 
   body += text(margin, 32, 'How much faster than Snappier', 18, theme.ink, 'font-weight="600"');
-  body += text(margin, 52, 'Snappier time ÷ SnappySimd time, whole files, single-threaded (line at 1× = Snappier; longer is faster)', 13, theme.secondary);
+  body += text(margin, 52, 'Snappier time ÷ Snappiest time, whole files, single-threaded (line at 1× = Snappier; longer is faster)', 13, theme.secondary);
 
   for (let rowIndex = 0; rowIndex < 2; rowIndex++) {
     const pair = panels.slice(rowIndex * 2, rowIndex * 2 + 2);
@@ -271,14 +271,14 @@ function parallelChart(rows, theme) {
   const series = operations.map(({ name, op }) => {
     const at = (library, t) => parallel.find(r => r.operation === op && r.library === library && Number(r.Threads) === t)?.ns;
     const snappier = at('Snappier', threads[0]);
-    const single = at('SnappySimd', threads[0]);
-    return { name, values: [snappier / single, ...threads.map(t => snappier / at('SnappySimdParallel', t))] };
+    const single = at('Snappiest', threads[0]);
+    return { name, values: [snappier / single, ...threads.map(t => snappier / at('SnappiestParallel', t))] };
   });
 
   const body = lineChart({
     width: 960, height: 380, theme,
     title: 'Opt-in parallel (SnappyParallelOptions)',
-    subtitle: `Times faster than Snappier by thread count, ${file} repeated to 16 MB (1 thread = single-threaded SnappySimd; line at 1× = Snappier)`,
+    subtitle: `Times faster than Snappier by thread count, ${file} repeated to 16 MB (1 thread = single-threaded Snappiest; line at 1× = Snappier)`,
     xLabels: ['1', ...threads.map(String)], xTitle: 'Threads (MaxDegreeOfParallelism)', series,
   });
   const desc = series.map(s => `${s.name}: ${s.values.map((v, i) => `${i === 0 ? 1 : threads[i - 1]} threads ${fmt(v)}`).join(', ')}`).join('; ');

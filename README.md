@@ -1,7 +1,7 @@
-# SnappySimd
+# Snappiest
 
-[![CI](https://github.com/zcsizmadia/SnappySimd/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zcsizmadia/SnappySimd/actions/workflows/ci.yml)
-[![NuGet](.github/badges/nuget.svg)](https://www.nuget.org/packages/SnappySimd)
+[![CI](https://github.com/zcsizmadia/Snappiest/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zcsizmadia/Snappiest/actions/workflows/ci.yml)
+[![NuGet](.github/badges/nuget.svg)](https://www.nuget.org/packages/Snappiest)
 [![.NET 8.0 | 10.0](.github/badges/dotnet.svg)](https://dotnet.microsoft.com/download)
 [![License: BSD-3-Clause](.github/badges/license.svg)](LICENSE)
 
@@ -17,10 +17,10 @@ hardware intrinsics for x64 and arm64.
 
 ## Why a new library?
 
-Snappier is a solid, widely used port of google/snappy, and SnappySimd keeps its API on purpose. A separate library
+Snappier is a solid, widely used port of google/snappy, and Snappiest keeps its API on purpose. A separate library
 exists because the speed comes from changes that don't fit Snappier's constraints:
 
-- **.NET 8 and later only.** Snappier also targets .NET Framework 4.7.2 and .NET Standard 2.0. SnappySimd uses
+- **.NET 8 and later only.** Snappier also targets .NET Framework 4.7.2 and .NET Standard 2.0. Snappiest uses
   `Vector256`, `Pclmulqdq.V256` (on .NET 10), static abstract interface members and other .NET 8+ features in its hot
   paths, without a second implementation for older runtimes.
 - **The hot paths are rewritten, not tuned.** The decoder is a port of google/snappy's current branchless loop
@@ -42,12 +42,12 @@ compressed bytes (see below). If you need .NET Framework or .NET Standard suppor
 
 ```diff
 - <PackageReference Include="Snappier" Version="1.3.1" />
-+ <PackageReference Include="SnappySimd" Version="1.0.0" />
++ <PackageReference Include="Snappiest" Version="1.0.0" />
 ```
 
 ```diff
 - using Snappier;
-+ using SnappySimd;
++ using Snappiest;
 ```
 
 That's all: `Snappy` and `SnappyStream` have the same members, parameter names and exception types as in Snappier.
@@ -61,7 +61,7 @@ multiplicative hash. Every output is valid Snappy and decodes everywhere.
 
 Small behaviour differences, all on invalid input or edge cases:
 
-| Situation | Snappier | SnappySimd |
+| Situation | Snappier | Snappiest |
 | --- | --- | --- |
 | Stream ends in the middle of a chunk | returns the partial data | throws `InvalidDataException` |
 | Stream identifier chunk with wrong contents | ignored | throws `InvalidDataException` |
@@ -75,7 +75,7 @@ Small behaviour differences, all on invalid input or edge cases:
 ### Blocks
 
 ```csharp
-using SnappySimd;
+using Snappiest;
 
 byte[] compressed = Snappy.CompressToArray(data);
 byte[] restored = Snappy.DecompressToArray(compressed);
@@ -95,7 +95,7 @@ using IMemoryOwner<byte> owner = Snappy.CompressToMemory(data);
 
 ```csharp
 using System.IO.Compression;
-using SnappySimd;
+using Snappiest;
 
 using (var compressor = new SnappyStream(fileStream, CompressionMode.Compress))
 {
@@ -150,33 +150,33 @@ disabled to cover them.
 ## Benchmarks
 
 AMD EPYC 7543 (Zen 3, AVX2), Ubuntu 22.04, BenchmarkDotNet 0.16 (medium job, in-process, one benchmark process per
-physical core). Snappier 1.3.1 is the baseline; speedup is Snappier time / SnappySimd time.
+physical core). Snappier 1.3.1 is the baseline; speedup is Snappier time / Snappiest time.
 Small-message results are the best of two runs for each library.
 
-SnappySimd is at least as fast as Snappier in 119 of the 120 comparisons below (182 of 184 in the
+Snappiest is at least as fast as Snappier in 119 of the 120 comparisons below (182 of 184 in the
 [full results](docs/benchmarks/README.md)). The exceptions are one html block processed over and over: compressing
 64 KB on .NET 10 (0.98x) and decompressing 16 KB on .NET 8 (0.99x); see the next paragraph.
 
 **Repeated block vs. different messages.** Most benchmarks here, like Snappier's and google/snappy's, decode one block
 millions of times. The CPU's branch predictor then learns that block's whole tag sequence, which makes a branchy
 decoder like Snappier's nearly mispredict-free (measured with `perf`: ~2 mispredictions per 1500 tags) and hides the
-advantage of SnappySimd's branchless decoder. With 256 different messages per size, as in real traffic, SnappySimd
+advantage of Snappiest's branchless decoder. With 256 different messages per size, as in real traffic, Snappiest
 decompresses 1.3-1.7x and compresses 1.14-1.23x faster than Snappier at every size from 1 KB to 64 KB, on both
 runtimes.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/speedup-dark.svg">
-  <img alt="Bar charts: SnappySimd speedup over Snappier per file for block and stream compression and decompression on .NET 10" src="docs/benchmarks/speedup-light.svg">
+  <img alt="Bar charts: Snappiest speedup over Snappier per file for block and stream compression and decompression on .NET 10" src="docs/benchmarks/speedup-light.svg">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/messages-dark.svg">
-  <img alt="Line chart: SnappySimd speedup over Snappier for 256 different messages per size, 1 KB to 64 KB, on .NET 10" src="docs/benchmarks/messages-light.svg">
+  <img alt="Line chart: Snappiest speedup over Snappier for 256 different messages per size, 1 KB to 64 KB, on .NET 10" src="docs/benchmarks/messages-light.svg">
 </picture>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/benchmarks/small-dark.svg">
-  <img alt="Line charts: SnappySimd speedup over Snappier by message size, 64 B to 64 KB, for one repeated html or fireworks.jpeg block on .NET 10" src="docs/benchmarks/small-light.svg">
+  <img alt="Line charts: Snappiest speedup over Snappier by message size, 64 B to 64 KB, for one repeated html or fireworks.jpeg block on .NET 10" src="docs/benchmarks/small-light.svg">
 </picture>
 
 <picture>
@@ -190,7 +190,7 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | alice29.txt | 353 µs | 292 µs | **1.21x** | 332 µs | 267 µs | **1.24x** |
 | asyoulik.txt | 316 µs | 267 µs | **1.19x** | 292 µs | 226 µs | **1.29x** |
@@ -209,7 +209,7 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | alice29.txt | 117 µs | 87.1 µs | **1.34x** | 113 µs | 89.9 µs | **1.26x** |
 | asyoulik.txt | 105 µs | 78.3 µs | **1.34x** | 102 µs | 81.0 µs | **1.26x** |
@@ -230,13 +230,13 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | all files | 7.62 ms | 6.52 ms | **1.17x** | 7.36 ms | 6.39 ms | **1.15x** |
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | all files | 3.02 ms | 1.79 ms | **1.69x** | 2.90 ms | 1.78 ms | **1.63x** |
 
@@ -244,7 +244,7 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1024 B | 1.4 µs | 1.2 µs | **1.19x** | 1.4 µs | 1.1 µs | **1.23x** |
 | 4096 B | 6.3 µs | 5.5 µs | **1.16x** | 6.2 µs | 5.4 µs | **1.15x** |
@@ -253,7 +253,7 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1024 B | 518 ns | 356 ns | **1.46x** | 461 ns | 343 ns | **1.34x** |
 | 4096 B | 2.5 µs | 1.5 µs | **1.61x** | 2.3 µs | 1.5 µs | **1.49x** |
@@ -264,7 +264,7 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | html 64 B | 112 ns | 62 ns | **1.82x** | 89 ns | 56 ns | **1.60x** |
 | html 1024 B | 910 ns | 736 ns | **1.24x** | 855 ns | 732 ns | **1.17x** |
@@ -273,7 +273,7 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | html 64 B | 80 ns | 41 ns | **1.95x** | 77 ns | 39 ns | **2.00x** |
 | html 1024 B | 309 ns | 270 ns | **1.14x** | 290 ns | 264 ns | **1.10x** |
@@ -282,7 +282,7 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **RoundTripArray**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | html 64 B | 254 ns | 156 ns | **1.62x** | 220 ns | 148 ns | **1.49x** |
 | html 1024 B | 1.4 µs | 1.2 µs | **1.21x** | 1.3 µs | 1.2 µs | **1.15x** |
@@ -293,7 +293,7 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **Compress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | alice29.txt | 384 µs | 302 µs | **1.27x** | 357 µs | 275 µs | **1.30x** |
 | fireworks.jpeg | 23.6 µs | 14.2 µs | **1.66x** | 24.0 µs | 13.2 µs | **1.81x** |
@@ -303,7 +303,7 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 
 **Decompress**
 
-| Input | Snappier (net8.0) | SnappySimd (net8.0) | Speedup | Snappier (net10.0) | SnappySimd (net10.0) | Speedup |
+| Input | Snappier (net8.0) | Snappiest (net8.0) | Speedup | Snappier (net10.0) | Snappiest (net10.0) | Speedup |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | alice29.txt | 142 µs | 94.9 µs | **1.50x** | 140 µs | 93.8 µs | **1.49x** |
 | fireworks.jpeg | 18.9 µs | 10.3 µs | **1.84x** | 18.8 µs | 8.0 µs | **2.34x** |
@@ -311,28 +311,28 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 | json_api.json | 461 µs | 276 µs | **1.67x** | 457 µs | 254 µs | **1.80x** |
 | urls.10K | 491 µs | 265 µs | **1.85x** | 477 µs | 257 µs | **1.86x** |
 
-Reproduce with `scripts/bench-remote.sh` (or run `benchmarks/SnappySimd.Benchmarks` directly with BenchmarkDotNet).
+Reproduce with `scripts/bench-remote.sh` (or run `benchmarks/Snappiest.Benchmarks` directly with BenchmarkDotNet).
 
 ## Building and testing
 
 ```shell
 dotnet build -c Release
-dotnet test --project tests/SnappySimd.Tests -c Release
+dotnet test --project tests/Snappiest.Tests -c Release
 scripts/coverage.sh        # coverage across CPU feature configurations
 ```
 
 Tests use [TUnit](https://github.com/thomhurst/TUnit) and include interop tests against Snappier, corruption fuzzing,
 and guard-page tests that crash on any out-of-bounds access.
 
-The fuzz tests (`tests/SnappySimd.Tests/Fuzz`) generate realistic and corrupt inputs and compare SnappySimd with
+The fuzz tests (`tests/Snappiest.Tests/Fuzz`) generate realistic and corrupt inputs and compare Snappiest with
 Snappier and a plain spec decoder. They run for about a second each in normal test runs; set `SNAPPY_FUZZ_SECONDS`
 for longer runs (the nightly workflow does) and `SNAPPY_FUZZ_SEED` to replay a reported failure:
 
 ```shell
-SNAPPY_FUZZ_SECONDS=300 dotnet test --project tests/SnappySimd.Tests -c Release -- --treenode-filter "/*/*/*FuzzTests/*"
+SNAPPY_FUZZ_SECONDS=300 dotnet test --project tests/Snappiest.Tests -c Release -- --treenode-filter "/*/*/*FuzzTests/*"
 ```
 
-Coverage-guided fuzzing (`tests/SnappySimd.Fuzz`, Linux x64) instruments SnappySimd with
+Coverage-guided fuzzing (`tests/Snappiest.Fuzz`, Linux x64) instruments Snappiest with
 [SharpFuzz](https://github.com/Metalnem/sharpfuzz) and drives it with libFuzzer. Three targets: `block` (block
 decompression of arbitrary bytes through every entry point, checked against the spec decoder, with input and output
 next to guard pages), `stream` (framing-format decompression, single-threaded and parallel, checked against a spec
