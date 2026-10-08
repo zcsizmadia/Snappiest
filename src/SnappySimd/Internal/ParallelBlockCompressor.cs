@@ -6,10 +6,18 @@ namespace SnappySimd.Internal;
 /// Compresses the 64KB fragments of a block on several threads. Each fragment is compressed exactly as the
 /// single-threaded compressor does (fragments never reference each other), so the output is identical.
 /// </summary>
+/// <remarks>
+/// Fragments are handed out one at a time over the whole input (no batches, so no barriers). Each is compressed
+/// into its own slot: in the output itself when the output has room for the maximum compressed length, otherwise
+/// in a ring of scratch slots. The <see cref="SlotPacker"/> moves fragments to their final positions as their
+/// predecessors complete, so packing overlaps with compression instead of running on the calling thread after
+/// each batch (measured, 16 MB json: 2 threads 7.6 -> 5.8 ms, 16 threads 1.48 -> 0.87 ms).
+/// </remarks>
 internal static unsafe class ParallelBlockCompressor
 {
-    // Fragments in flight per thread: enough to balance uneven fragments, few enough to bound the scratch memory
-    private const int FragmentsPerThread = 4;
+    // Scratch slots per thread when the output is too small for direct compression: a fragment waits for its slot
+    // only when packing lags this many fragments per thread behind compression
+    private const int SlotsPerThread = 4;
 
     public static bool TryCompress(ReadOnlySpan<byte> input, Span<byte> output, SnappyParallelOptions options, out int bytesWritten)
     {
@@ -27,56 +35,56 @@ internal static unsafe class ParallelBlockCompressor
         }
 
         int written = VarInt.Write(output, (uint)input.Length);
-
-        int batch = Math.Min(fragments, threads * FragmentsPerThread);
         int slot = BlockCompressor.MaxFragmentLength(BlockCompressor.BlockSize);
-        byte[] scratch = ArrayPool<byte>.Shared.Rent(batch * slot);
-        int[] lengths = ArrayPool<int>.Shared.Rent(batch);
-        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = threads };
 
+        // Slots in the output when every fragment's slot fits (the last fragment may be short)
+        int last = input.Length - ((fragments - 1) * BlockCompressor.BlockSize);
+        bool direct = (long)output.Length - written >= ((long)(fragments - 1) * slot) + BlockCompressor.MaxFragmentLength(last);
+
+        byte[]? scratch = direct ? null : ArrayPool<byte>.Shared.Rent(threads * SlotsPerThread * slot);
         try
         {
             fixed (byte* inputPointer = input)
+            fixed (byte* outputPointer = output)
             fixed (byte* scratchPointer = scratch)
             {
-                // Spans cannot be captured by the worker lambda: pass the pinned addresses instead
+                var packer = new SlotPacker(fragments);
+                packer.Reset(fragments, direct ? outputPointer + written : scratchPointer, direct ? fragments : threads * SlotsPerThread, slot,
+                    outputPointer, output.Length, written);
+
+                // Spans cannot be captured by the worker lambda: pass the pinned address instead
                 nint inputAddress = (nint)inputPointer;
-                nint scratchAddress = (nint)scratchPointer;
                 int inputLength = input.Length;
 
-                for (int first = 0; first < fragments; first += batch)
+                ParallelWork.For(fragments, threads, i =>
                 {
-                    int count = Math.Min(batch, fragments - first);
-                    int firstFragment = first;
-
-                    ParallelWork.For(count, parallelOptions, i =>
+                    if (!packer.WaitForSlot(i))
                     {
-                        int offset = (firstFragment + i) * BlockCompressor.BlockSize;
-                        var source = new ReadOnlySpan<byte>((byte*)inputAddress + offset, Math.Min(BlockCompressor.BlockSize, inputLength - offset));
-                        var destination = new Span<byte>((byte*)scratchAddress + ((nint)i * slot), slot);
-                        lengths[i] = BlockCompressor.CompressFragment(source, destination);
-                    });
-
-                    for (int i = 0; i < count; i++)
-                    {
-                        if (output.Length - written < lengths[i])
-                        {
-                            return false;
-                        }
-
-                        new ReadOnlySpan<byte>(scratchPointer + ((nint)i * slot), lengths[i]).CopyTo(output.Slice(written));
-                        written += lengths[i];
+                        return;
                     }
+
+                    int offset = i * BlockCompressor.BlockSize;
+                    var source = new ReadOnlySpan<byte>((byte*)inputAddress + offset, Math.Min(BlockCompressor.BlockSize, inputLength - offset));
+                    packer.Complete(i, BlockCompressor.CompressFragment(source, packer.GetSlot(i)));
+                });
+
+                // Every fragment is compressed; whatever the last worker did not pack is packed here
+                packer.Pack();
+                if (packer.Failed)
+                {
+                    return false;
                 }
+
+                bytesWritten = packer.Packed;
+                return true;
             }
         }
         finally
         {
-            ArrayPool<int>.Shared.Return(lengths);
-            ArrayPool<byte>.Shared.Return(scratch);
+            if (scratch is not null)
+            {
+                ArrayPool<byte>.Shared.Return(scratch);
+            }
         }
-
-        bytesWritten = written;
-        return true;
     }
 }

@@ -136,6 +136,33 @@ warm up for many seconds (BenchmarkDotNet's warmup hides it).
 CRC: 128-bit PCLMULQDQ folding is 1.8x slower than the CRC32 instruction on Zen 3; computing the CRC during decode
 gives no cache benefit (the output is L2-resident anyway).
 
+Parallel paths (`ParallelWork`, `SlotPacker`, the stream pipelines; 16 MB json on a 16-core set, .NET 10):
+- Batches with a barrier and a serial copy/pack on the calling thread were the cost: block compression went from
+  7.6/1.48 ms (2/16 threads) to 5.8/0.87 ms with one work loop over all fragments and workers packing fragments into
+  place as their predecessors complete; stream compression from 8.3/1.9 to 6.6/1.3 ms with the stream write of a
+  batch overlapping the next batch (two output buffers); decompression with 80 KB reads from 2.2/2.3 ms (8/16
+  threads) to 1.7/1.45 ms with the next batch decoded while the slots of the previous one are copied out (two
+  slot sets of 2 chunks per thread; 4 per thread measured the same at twice the memory). 1 MB reads, decoded
+  straight into the caller's buffer, are unchanged (1.07/1.07 ms).
+- Size sweep (128 KB - 64 MB, parallel forced): block and stream compression beat single-threaded from 128 KB
+  (2 fragments: 35 vs 62 us); stream decompression with 80 KB reads is slower than single-threaded below 512 KB
+  on 2 threads (256 KB: 103 vs 64 us, thread wake-ups dominate) and even at 1 MB reads, so the 256 KB default of
+  `MinimumParallelLength` (block APIs only; streams do not know their length) stays. Stream compression of
+  <= 2 MB gains nothing beyond 8 threads (one batch, no overlap).
+- The thread pool's hill climbing throttles CPU-bound workers: with 16 threads on a 16-core set, about every
+  second process (after a sweep of 2-16 thread phases) settled into a state where batches of 16-64 chunks took 2x
+  longer for the rest of the process (workers arrive late; the number that run per batch is the same). With
+  `DOTNET_HillClimbing_Disable=1` (runtimeconfig `System.Threading.ThreadPool.HillClimbing.Disable`) it never
+  happened, and 16-thread small-read decoding went from 2.0-2.3 to 1.5-1.8 ms even in the good state. A library
+  cannot set it; the batches of `ParallelWork.For` use `Parallel.For`, which showed the slow state less often than
+  workers we start ourselves (all at once with `Task.Run`, a chain where each starts the next, or a tree), and the
+  chain is only for `Start`/`Join`, whose batches overlap with the caller's write or copy. Judge 16-thread results
+  over several processes.
+- Stream compression with 2 chunks per thread per batch (to halve the two output buffers): 16 threads 1.8-2.4 ms
+  instead of 1.3 ms. Direct decoding only when every worker gets at least 2 chunks: slower.
+- Small reads (Stream.CopyTo uses 80 KB) are bound by the reading thread copying every chunk out of the slots
+  (16 MB is about 1.6 ms of memcpy); decoding the next batch in the background only hides the decode time.
+
 ## Git
 
 GitHub repo `zcsizmadia/SnappySimd`; commits use `zcsizmadia@gmail.com` (set in this repo's config).

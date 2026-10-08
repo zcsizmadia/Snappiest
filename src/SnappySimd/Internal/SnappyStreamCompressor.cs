@@ -1,5 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace SnappySimd.Internal;
 
@@ -8,16 +10,19 @@ namespace SnappySimd.Internal;
 /// output buffer that is written to the stream once per <see cref="Write"/> call.
 /// </summary>
 /// <remarks>
-/// With parallel options, input is gathered into a batch of chunks (four per thread) and the chunks are compressed
-/// concurrently. Chunk boundaries are the same as single-threaded (every 64KB since the last flush), so the output
-/// is identical.
+/// With parallel options, input is gathered into a batch of chunks (several per thread) and the chunks are
+/// compressed concurrently into a second output buffer by pool workers, each chunk packed into place by whichever
+/// worker finds its predecessors done (<see cref="SlotPacker"/>). Meanwhile the calling thread writes the previous
+/// batch, then joins the workers. A batch never outlives the Write call that started it. Chunk boundaries are the
+/// same as single-threaded (every 64KB since the last flush), so the output is identical.
 /// </remarks>
 internal sealed class SnappyStreamCompressor : IDisposable
 {
     private const int ChunkOverhead = StreamFormat.ChunkHeaderLength + StreamFormat.ChecksumLength;
 
-    // Chunks per thread in a parallel batch. Each batch ends with a barrier and a serial pack and write, so small
-    // batches leave threads idle (2 per thread: 16 threads used ~6 cores); 8 per thread made 12 threads slower again.
+    // Chunks per thread in a parallel batch. A batch ends with the caller joining the workers, so the last chunks of
+    // a batch leave threads idle: 2 per thread (half the buffers) measured 16 MB on 16 threads at 1.8-2.4 ms
+    // instead of 1.3 ms; 8 per thread made 12 threads slower than 8 before the write overlapped with compression.
     private const int ChunksPerThread = 4;
 
     private static readonly int MaxChunkOutput =
@@ -25,13 +30,20 @@ internal sealed class SnappyStreamCompressor : IDisposable
 
     private readonly int _threads;
     private readonly int _batchChunks;
-    private readonly ParallelOptions? _parallelOptions;
+    private readonly SlotPacker? _packer;
 
     private byte[]? _input;
     private int _inputLength;
 
+    // Output not yet written: the stream header, sequential chunks and the last joined batch
     private byte[]? _output;
     private int _outputLength;
+
+    // The batch in flight compresses into _back (parallel only); when joined, _back becomes the output buffer
+    private byte[]? _back;
+    private ParallelWork? _pending;
+    private GCHandle _pinnedBack;
+    private GCHandle _pinnedInput;
 
     private bool _headerWritten;
     private bool _disposed;
@@ -40,81 +52,131 @@ internal sealed class SnappyStreamCompressor : IDisposable
     {
         _threads = parallel?.MaxDegreeOfParallelism ?? 1;
         _batchChunks = _threads > 1 ? _threads * ChunksPerThread : 1;
-        _parallelOptions = _threads > 1 ? new ParallelOptions { MaxDegreeOfParallelism = _threads } : null;
+        _packer = _threads > 1 ? new SlotPacker(_batchChunks) : null;
     }
 
     private int BatchInputSize => _batchChunks * StreamFormat.MaxChunkDataLength;
 
     private int BatchOutputSize => _batchChunks * MaxChunkOutput;
 
-    // Room for the stream identifier and two chunks when single-threaded; a parallel batch is large enough to be
-    // written on its own, which keeps the buffers at about two batches (input and output) per stream
-    private int OutputBufferSize => StreamFormat.StreamHeader.Length + ((_threads > 1 ? 1 : 2) * BatchOutputSize);
+    // Room for the stream identifier and two chunks when single-threaded; a parallel buffer holds the identifier,
+    // one batch and a chunk compressed after it at a flush. Parallel streams have two such buffers.
+    private int OutputBufferSize => StreamFormat.StreamHeader.Length + (_threads > 1 ? BatchOutputSize + MaxChunkOutput : 2 * MaxChunkOutput);
 
-    public void Write(ReadOnlySpan<byte> input, Stream stream)
+    // Output beyond this is written before the next chunk or batch is compressed
+    private int WriteThreshold => StreamFormat.StreamHeader.Length + (_threads > 1 ? 0 : MaxChunkOutput);
+
+    public unsafe void Write(ReadOnlySpan<byte> input, Stream stream)
     {
-        CompressInput(input, stream);
-        WriteOutput(stream);
+        EnsureBuffers();
+        EnsureHeader();
+
+        // A batch may compress from the caller's buffer while the previous batch is written
+        fixed (byte* inputPointer = input)
+        {
+            try
+            {
+                bool largeWrite = input.Length >= BatchInputSize;
+                while (!input.IsEmpty)
+                {
+                    int consumed = CompressInputOnce(input, largeWrite);
+                    input = input.Slice(consumed);
+
+                    if (_outputLength > WriteThreshold)
+                    {
+                        WriteOutput(stream);
+                    }
+                }
+
+                JoinPending();
+                WriteOutput(stream);
+            }
+            catch
+            {
+                AbandonPending();
+                throw;
+            }
+        }
     }
 
     public async ValueTask WriteAsync(ReadOnlyMemory<byte> input, Stream stream, CancellationToken cancellationToken)
     {
-        bool largeWrite = input.Length >= BatchInputSize;
-        while (!input.IsEmpty)
-        {
-            // Bound the buffered output so it can be written between batches
-            int consumed = CompressInputOnce(input.Span, largeWrite);
-            input = input.Slice(consumed);
-
-            if (_outputLength > OutputBufferSize - BatchOutputSize)
-            {
-                await WriteOutputAsync(stream, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
         EnsureBuffers();
         EnsureHeader();
-        await WriteOutputAsync(stream, cancellationToken).ConfigureAwait(false);
+
+        using MemoryHandle pin = input.Pin();
+        try
+        {
+            bool largeWrite = input.Length >= BatchInputSize;
+            while (!input.IsEmpty)
+            {
+                int consumed = CompressInputOnce(input.Span, largeWrite);
+                input = input.Slice(consumed);
+
+                if (_outputLength > WriteThreshold)
+                {
+                    await WriteOutputAsync(stream, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            JoinPending();
+            await WriteOutputAsync(stream, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            AbandonPending();
+            throw;
+        }
     }
 
     public void Flush(Stream stream)
     {
-        CompressPending();
-        WriteOutput(stream);
+        EnsureBuffers();
+        EnsureHeader();
+
+        try
+        {
+            // Nothing is pending here (writes join their batches), so this only writes leftovers of a failed write
+            JoinPending();
+            WriteOutput(stream);
+
+            CompressPending();
+            JoinPending();
+            WriteOutput(stream);
+        }
+        catch
+        {
+            AbandonPending();
+            throw;
+        }
     }
 
-    public ValueTask FlushAsync(Stream stream, CancellationToken cancellationToken)
-    {
-        CompressPending();
-        return WriteOutputAsync(stream, cancellationToken);
-    }
-
-    private void CompressInput(ReadOnlySpan<byte> input, Stream stream)
+    public async ValueTask FlushAsync(Stream stream, CancellationToken cancellationToken)
     {
         EnsureBuffers();
         EnsureHeader();
 
-        bool largeWrite = input.Length >= BatchInputSize;
-        while (!input.IsEmpty)
+        try
         {
-            int consumed = CompressInputOnce(input, largeWrite);
-            input = input.Slice(consumed);
+            JoinPending();
+            await WriteOutputAsync(stream, cancellationToken).ConfigureAwait(false);
 
-            if (_outputLength > OutputBufferSize - BatchOutputSize)
-            {
-                WriteOutput(stream);
-            }
+            CompressPending();
+            JoinPending();
+            await WriteOutputAsync(stream, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            AbandonPending();
+            throw;
         }
     }
 
     /// <summary>Consumes input up to the next batch boundary, compressing the batch if it completes.</summary>
-    /// <param name="input">The rest of the caller's write.</param>
+    /// <param name="input">The rest of the caller's write, pinned by the caller.</param>
     /// <param name="largeWrite">The caller's write was at least a batch long.</param>
     private int CompressInputOnce(ReadOnlySpan<byte> input, bool largeWrite)
     {
-        EnsureBuffers();
-        EnsureHeader();
-
         int batchInput = BatchInputSize;
         if (_inputLength == 0 && input.Length >= batchInput)
         {
@@ -133,6 +195,12 @@ internal sealed class SnappyStreamCompressor : IDisposable
             return whole;
         }
 
+        // A batch compressing from the input buffer must finish before it is reused
+        if (_pinnedInput.IsAllocated)
+        {
+            JoinPending();
+        }
+
         int append = Math.Min(input.Length, batchInput - _inputLength);
         input.Slice(0, append).CopyTo(_input.AsSpan(_inputLength));
         _inputLength += append;
@@ -148,9 +216,6 @@ internal sealed class SnappyStreamCompressor : IDisposable
 
     private void CompressPending()
     {
-        EnsureBuffers();
-        EnsureHeader();
-
         if (_inputLength > 0)
         {
             CompressChunks(_input.AsSpan(0, _inputLength));
@@ -158,12 +223,17 @@ internal sealed class SnappyStreamCompressor : IDisposable
         }
     }
 
-    /// <summary>Compresses consecutive 64KB chunks (the last may be shorter) into the output buffer.</summary>
+    /// <summary>
+    /// Compresses consecutive 64KB chunks (the last may be shorter) into the output buffer, or starts a batch of
+    /// them on the workers. <paramref name="input"/> must stay pinned until the batch is joined.
+    /// </summary>
     private unsafe void CompressChunks(ReadOnlySpan<byte> input)
     {
         int count = (input.Length + StreamFormat.MaxChunkDataLength - 1) / StreamFormat.MaxChunkDataLength;
-        if (count == 1 || _parallelOptions is null)
+        if (count == 1 || _threads == 1)
         {
+            // After the batch before it, which the output buffer has room for
+            JoinPending();
             for (int i = 0; i < count; i++)
             {
                 ReadOnlySpan<byte> chunk = input.Slice(i * StreamFormat.MaxChunkDataLength);
@@ -173,39 +243,100 @@ internal sealed class SnappyStreamCompressor : IDisposable
             return;
         }
 
-        // Each chunk goes into its own slot, then the slots are packed in order
-        int[] lengths = ArrayPool<int>.Shared.Rent(count);
+        JoinPending();
+
+        // The output buffer holds either the batch just joined, which the caller writes while this batch runs, or
+        // only the stream header: put that in front of the batch so they are written together
+        byte[] back = _back!;
+        int start = 0;
+        if (_outputLength <= StreamFormat.StreamHeader.Length)
+        {
+            start = _outputLength;
+            _output.AsSpan(0, start).CopyTo(back);
+            _outputLength = 0;
+        }
+
+        _pinnedBack = GCHandle.Alloc(back, GCHandleType.Pinned);
+        if (input.Overlaps(_input))
+        {
+            _pinnedInput = GCHandle.Alloc(_input, GCHandleType.Pinned);
+        }
+
+        SlotPacker packer = _packer!;
+        byte* backPointer = (byte*)_pinnedBack.AddrOfPinnedObject();
+        packer.Reset(count, backPointer + start, count, MaxChunkOutput, backPointer, back.Length, start);
+
+        // Spans cannot be captured by the worker lambda: pass the pinned address instead
+        nint inputAddress;
+        fixed (byte* inputPointer = input)
+        {
+            inputAddress = (nint)inputPointer;
+        }
+
+        int inputLength = input.Length;
+        _pending = ParallelWork.Start(count, _threads, i =>
+        {
+            int offset = i * StreamFormat.MaxChunkDataLength;
+            var chunk = new ReadOnlySpan<byte>((byte*)inputAddress + offset, Math.Min(StreamFormat.MaxChunkDataLength, inputLength - offset));
+            packer.Complete(i, CompressChunk(chunk, packer.GetSlot(i)));
+        });
+    }
+
+    /// <summary>Works on the pending batch until it is done, then makes its buffer the output buffer.</summary>
+    private void JoinPending()
+    {
+        if (_pending is null)
+        {
+            return;
+        }
+
+        ParallelWork pending = _pending;
+        _pending = null;
         try
         {
-            fixed (byte* inputPointer = input)
-            fixed (byte* outputPointer = &_output![_outputLength])
-            {
-                nint inputAddress = (nint)inputPointer;
-                nint outputAddress = (nint)outputPointer;
-                int inputLength = input.Length;
-                int slot = MaxChunkOutput;
-
-                ParallelWork.For(count, _parallelOptions, i =>
-                {
-                    int offset = i * StreamFormat.MaxChunkDataLength;
-                    var chunk = new ReadOnlySpan<byte>((byte*)inputAddress + offset, Math.Min(StreamFormat.MaxChunkDataLength, inputLength - offset));
-                    lengths[i] = CompressChunk(chunk, new Span<byte>((byte*)outputAddress + ((nint)i * slot), slot));
-                });
-
-                // Slot i starts at or after the end of the packed chunks before it, so moving forward is safe
-                int packed = lengths[0];
-                for (int i = 1; i < count; i++)
-                {
-                    Buffer.MemoryCopy(outputPointer + ((nint)i * slot), outputPointer + packed, lengths[i], lengths[i]);
-                    packed += lengths[i];
-                }
-
-                _outputLength += packed;
-            }
+            pending.Join();
         }
         finally
         {
-            ArrayPool<int>.Shared.Return(lengths);
+            Unpin();
+        }
+
+        // Every chunk is compressed; whatever the last worker did not pack is packed here
+        SlotPacker packer = _packer!;
+        packer.Pack();
+
+        // The previous output was written while the batch ran
+        Debug.Assert(_outputLength == 0);
+        (_output, _back) = (_back, _output);
+        _outputLength = packer.Packed;
+    }
+
+    /// <summary>Stops the pending batch when its output is no longer wanted (the write failed).</summary>
+    private void AbandonPending()
+    {
+        if (_pending is null)
+        {
+            return;
+        }
+
+        ParallelWork pending = _pending;
+        _pending = null;
+        try
+        {
+            pending.Abandon();
+        }
+        finally
+        {
+            Unpin();
+        }
+    }
+
+    private void Unpin()
+    {
+        _pinnedBack.Free();
+        if (_pinnedInput.IsAllocated)
+        {
+            _pinnedInput.Free();
         }
     }
 
@@ -245,8 +376,9 @@ internal sealed class SnappyStreamCompressor : IDisposable
     {
         if (_outputLength > 0)
         {
-            stream.Write(_output!, 0, _outputLength);
+            int length = _outputLength;
             _outputLength = 0;
+            stream.Write(_output!, 0, length);
         }
     }
 
@@ -277,11 +409,18 @@ internal sealed class SnappyStreamCompressor : IDisposable
 
         _input ??= ArrayPool<byte>.Shared.Rent(BatchInputSize);
         _output ??= ArrayPool<byte>.Shared.Rent(OutputBufferSize);
+        if (_threads > 1)
+        {
+            _back ??= ArrayPool<byte>.Shared.Rent(OutputBufferSize);
+        }
     }
 
     public void Dispose()
     {
         _disposed = true;
+
+        // A batch is pending only after a failed write; the buffers cannot be returned while it runs
+        AbandonPending();
 
         if (_input is not null)
         {
@@ -293,6 +432,12 @@ internal sealed class SnappyStreamCompressor : IDisposable
         {
             ArrayPool<byte>.Shared.Return(_output);
             _output = null;
+        }
+
+        if (_back is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_back);
+            _back = null;
         }
     }
 }

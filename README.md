@@ -127,6 +127,12 @@ Inputs below `MinimumParallelLength` (default 256KB) are processed on the callin
 always single-threaded: other encoders may emit copies that cross fragment boundaries. Neither Snappier nor
 google/snappy has a parallel mode.
 
+The work runs on the .NET thread pool. Streams write (or serve) one batch of chunks while the next is compressed
+(or decoded) in the background; a parallel stream buffers about 900KB per thread when compressing and 600KB when
+decompressing. With as many threads as cores, the thread pool's hill climbing sometimes holds workers back; an
+application that needs the last 20-30% at 16+ threads can turn it off with the
+`System.Threading.ThreadPool.HillClimbing.Disable` runtime setting.
+
 ## How it is fast
 
 - **Decompression** is a port of the branchless decoder from google/snappy 1.3: tags decode through a lookup table

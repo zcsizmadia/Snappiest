@@ -19,6 +19,9 @@ public class ParallelBenchmarks
     private MemoryStream _compressedStream = new();
     private byte[] _readBuffer = new byte[1 << 20];
 
+    // Stream.CopyTo reads 80KB at a time: too small for whole chunks to be decoded straight into it
+    private byte[] _smallReadBuffer = new byte[81920];
+
     public static IEnumerable<string> Sources => Corpus.Files("json_api.json", "html_x_4", "urls.10K");
 
     [ParamsSource(nameof(Sources))]
@@ -107,6 +110,36 @@ public class ParallelBenchmarks
         _compressedStream.Position = 0;
         using var stream = new SnappyStream(_compressedStream, System.IO.Compression.CompressionMode.Decompress, true, _options);
         while (stream.Read(_readBuffer) > 0)
+        {
+        }
+    }
+
+    [BenchmarkCategory("StreamDecompressSmallReads"), Benchmark(Baseline = true)]
+    public void StreamDecompressSmallReads_Snappier()
+    {
+        _compressedStream.Position = 0;
+        using var stream = new Snappier.SnappyStream(_compressedStream, System.IO.Compression.CompressionMode.Decompress, true);
+        while (stream.Read(_smallReadBuffer) > 0)
+        {
+        }
+    }
+
+    [BenchmarkCategory("StreamDecompressSmallReads"), Benchmark]
+    public void StreamDecompressSmallReads_SnappySimd()
+    {
+        _compressedStream.Position = 0;
+        using var stream = new SnappyStream(_compressedStream, System.IO.Compression.CompressionMode.Decompress, true);
+        while (stream.Read(_smallReadBuffer) > 0)
+        {
+        }
+    }
+
+    [BenchmarkCategory("StreamDecompressSmallReads"), Benchmark]
+    public void StreamDecompressSmallReads_SnappySimdParallel()
+    {
+        _compressedStream.Position = 0;
+        using var stream = new SnappyStream(_compressedStream, System.IO.Compression.CompressionMode.Decompress, true, _options);
+        while (stream.Read(_smallReadBuffer) > 0)
         {
         }
     }

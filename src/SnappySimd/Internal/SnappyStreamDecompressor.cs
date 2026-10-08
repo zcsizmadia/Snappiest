@@ -9,28 +9,34 @@ namespace SnappySimd.Internal;
 /// is decoded in one pass: directly into the caller's buffer when it fits, otherwise into an internal buffer.
 /// </summary>
 /// <remarks>
-/// With parallel options, a run of complete data chunks in the input buffer (up to four per thread) is decoded
-/// concurrently: straight into the caller's buffer when at least two of them fit, otherwise into per-chunk slots,
-/// which are then served in order. A failing chunk throws when reading reaches it, as in sequential decoding.
+/// With parallel options, a run of complete data chunks in the input buffer (a batch of several per thread) is
+/// decoded concurrently: straight into the caller's buffer when at least two of them fit, otherwise into per-chunk
+/// slots, which are then served in order. While the slots of one batch are served, the next batch is decoded in
+/// the background into a second set of slots, so small reads (Stream.CopyTo uses 80KB) overlap copying with
+/// decoding; the background batch is joined before a read returns 0, so nothing runs while input is refilled or
+/// after Dispose. A failing chunk throws when reading reaches it, as in sequential decoding.
 /// </remarks>
 internal sealed class SnappyStreamDecompressor : IDisposable
 {
     // Holds at least one maximum size chunk plus read-ahead
     private const int SequentialInputBufferSize = 1 << 17;
-    private const int ChunksPerThread = 4;
 
-    private readonly ParallelOptions? _parallelOptions;
+    // Chunks per thread in a batch. Two sets of slots are decoded alternately, so this is half of the single set
+    // used before, keeping the memory the same.
+    private const int ChunksPerThread = 2;
+
+    private readonly int _threads;
     private readonly int _batchChunks;
 
     private byte[]? _input;
     private int _inputStart;
     private int _inputEnd;
 
-    // Decoded output not yet returned: _slotCount slots of up to 64KB, served from slot _slot at _outputStart
-    private byte[]? _output;
-    private readonly int[] _slotLengths;
-    private readonly Exception?[] _slotErrors;
-    private int _slotCount;
+    // Decoded output not yet returned: _slots.Count slots of up to 64KB, served from slot _slot at _outputStart.
+    // _ahead holds the batch being decoded in the background, if any.
+    private SlotSet _slots;
+    private SlotSet _ahead;
+    private ParallelWork? _aheadWork;
     private int _slot;
     private int _outputStart;
 
@@ -44,14 +50,15 @@ internal sealed class SnappyStreamDecompressor : IDisposable
 
     public SnappyStreamDecompressor(SnappyParallelOptions? parallel = null)
     {
-        int threads = parallel?.MaxDegreeOfParallelism ?? 1;
-        _batchChunks = threads > 1 ? threads * ChunksPerThread : 1;
-        _parallelOptions = threads > 1 ? new ParallelOptions { MaxDegreeOfParallelism = threads } : null;
-        _slotLengths = new int[_batchChunks];
-        _slotErrors = new Exception?[_batchChunks];
+        _threads = parallel?.MaxDegreeOfParallelism ?? 1;
+        _batchChunks = _threads > 1 ? _threads * ChunksPerThread : 1;
+        _slots = new SlotSet(_batchChunks);
+        _ahead = new SlotSet(_batchChunks);
         _batchOffsets = new int[_batchChunks];
 
-        int inputSize = Math.Max(SequentialInputBufferSize, (_batchChunks + 1) * (StreamFormat.ChunkHeaderLength + StreamFormat.MaxDataChunkLength));
+        // Room for the batch being served and the one decoded ahead, plus a chunk
+        int batches = _threads > 1 ? 2 : 1;
+        int inputSize = Math.Max(SequentialInputBufferSize, ((batches * _batchChunks) + 1) * (StreamFormat.ChunkHeaderLength + StreamFormat.MaxDataChunkLength));
         _input = ArrayPool<byte>.Shared.Rent(inputSize);
     }
 
@@ -72,19 +79,20 @@ internal sealed class SnappyStreamDecompressor : IDisposable
 
         while (!destination.IsEmpty)
         {
-            if (_slot < _slotCount)
+            SlotSet slots = _slots;
+            if (_slot < slots.Count)
             {
-                if (_slotErrors[_slot] is { } error)
+                if (slots.Errors[_slot] is { } error)
                 {
                     // The chunk failed when it was decoded in a batch: fail now that reading has reached it, and stay failed
-                    _slotCount = _slot = 0;
+                    slots.Count = _slot = 0;
                     _failure = error;
                     ExceptionDispatchInfo.Throw(error);
                 }
 
-                int length = _slotLengths[_slot];
+                int length = slots.Lengths[_slot];
                 int count = Math.Min(destination.Length, length - _outputStart);
-                _output.AsSpan((_slot * StreamFormat.MaxChunkDataLength) + _outputStart, count).CopyTo(destination);
+                slots.Output.AsSpan((_slot * StreamFormat.MaxChunkDataLength) + _outputStart, count).CopyTo(destination);
                 _outputStart += count;
                 written += count;
                 destination = destination.Slice(count);
@@ -95,6 +103,14 @@ internal sealed class SnappyStreamDecompressor : IDisposable
                     _outputStart = 0;
                 }
 
+                continue;
+            }
+
+            if (_aheadWork is not null)
+            {
+                // The batch decoded while these slots were served is next; decode the one after it meanwhile
+                JoinAhead();
+                StartAhead(input);
                 continue;
             }
 
@@ -113,7 +129,7 @@ internal sealed class SnappyStreamDecompressor : IDisposable
                 continue;
             }
 
-            if (_parallelOptions is not null)
+            if (_threads > 1)
             {
                 // Progress is consumed input, not written bytes: a batch of empty chunks writes nothing, and
                 // `available` is stale after any batch
@@ -128,6 +144,7 @@ internal sealed class SnappyStreamDecompressor : IDisposable
 
                 if (DecodeBatch(input))
                 {
+                    StartAhead(input);
                     continue;
                 }
             }
@@ -168,11 +185,11 @@ internal sealed class SnappyStreamDecompressor : IDisposable
                     }
                     else
                     {
-                        _output ??= ArrayPool<byte>.Shared.Rent(_batchChunks * StreamFormat.MaxChunkDataLength);
-                        DecodeChunk(chunkType, chunk, headerLength, _output.AsSpan(0, length));
-                        _slotLengths[0] = length;
-                        _slotErrors[0] = null;
-                        _slotCount = 1;
+                        byte[] output = slots.EnsureOutput();
+                        DecodeChunk(chunkType, chunk, headerLength, output.AsSpan(0, length));
+                        slots.Lengths[0] = length;
+                        slots.Errors[0] = null;
+                        slots.Count = 1;
                         _slot = 0;
                         _outputStart = 0;
                     }
@@ -228,7 +245,7 @@ internal sealed class SnappyStreamDecompressor : IDisposable
     private int DecodeBatchInto(byte[] input, Span<byte> destination)
     {
         int[] offsets = _batchOffsets;
-        int[] lengths = _slotLengths;
+        int[] lengths = _slots.Lengths;
         int count = 0;
         int total = 0;
         int position = _inputStart;
@@ -279,7 +296,7 @@ internal sealed class SnappyStreamDecompressor : IDisposable
             {
                 nint address = (nint)target;
                 int end = total;
-                ParallelWork.For(count, _parallelOptions!, i =>
+                ParallelWork.For(count, _threads, i =>
                 {
                     int offset = offsets[i];
                     uint header = BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(offset));
@@ -315,12 +332,11 @@ internal sealed class SnappyStreamDecompressor : IDisposable
     }
 
     /// <summary>
-    /// Decodes a run of at least two complete data chunks at the head of the input concurrently.
+    /// Finds a run of at least two complete data chunks at the head of the input and consumes it.
     /// </summary>
-    /// <returns><c>false</c> if there is no such run; the sequential path then handles the next chunk.</returns>
-    private bool DecodeBatch(byte[] input)
+    /// <returns>The number of chunks, with their offsets in <paramref name="offsets"/>; 0 if there is no such run.</returns>
+    private int TakeBatch(byte[] input, int[] offsets)
     {
-        int[] offsets = _batchOffsets;
         int count = 0;
         int position = _inputStart;
 
@@ -343,38 +359,68 @@ internal sealed class SnappyStreamDecompressor : IDisposable
 
         if (count < 2)
         {
+            return 0;
+        }
+
+        _inputStart = position;
+        return count;
+    }
+
+    /// <summary>
+    /// Decodes a run of at least two complete data chunks at the head of the input concurrently into the slots.
+    /// </summary>
+    /// <returns><c>false</c> if there is no such run; the sequential path then handles the next chunk.</returns>
+    private bool DecodeBatch(byte[] input)
+    {
+        SlotSet slots = _slots;
+        int count = TakeBatch(input, slots.Offsets);
+        if (count == 0)
+        {
             return false;
         }
 
-        _output ??= ArrayPool<byte>.Shared.Rent(_batchChunks * StreamFormat.MaxChunkDataLength);
-        byte[] output = _output;
-        int[] lengths = _slotLengths;
-        Exception?[] errors = _slotErrors;
-
-        ParallelWork.For(count, _parallelOptions!, i =>
-        {
-            int offset = offsets[i];
-            uint header = BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(offset));
-            ReadOnlySpan<byte> chunk = input.AsSpan(offset + StreamFormat.ChunkHeaderLength, (int)(header >> 8));
-            try
-            {
-                int length = GetChunkDataLength((byte)header, chunk, out int headerLength);
-                DecodeChunk((byte)header, chunk, headerLength, output.AsSpan(i * StreamFormat.MaxChunkDataLength, length));
-                lengths[i] = length;
-                errors[i] = null;
-            }
-            catch (InvalidDataException exception)
-            {
-                lengths[i] = 0;
-                errors[i] = exception;
-            }
-        });
-
-        _inputStart = position;
-        _slotCount = count;
+        slots.EnsureOutput();
+        slots.Count = count;
         _slot = 0;
         _outputStart = 0;
+        ParallelWork.For(count, _threads, slots.Decode(input));
         return true;
+    }
+
+    /// <summary>Starts decoding the next run of complete data chunks into the spare slots, if there is one.</summary>
+    private void StartAhead(byte[] input)
+    {
+        SlotSet ahead = _ahead;
+        int count = TakeBatch(input, ahead.Offsets);
+        if (count == 0)
+        {
+            return;
+        }
+
+        ahead.EnsureOutput();
+        ahead.Count = count;
+        _aheadWork = ParallelWork.Start(count, _threads, ahead.Decode(input));
+    }
+
+    /// <summary>Waits for the batch decoded ahead and makes its slots the ones being served.</summary>
+    private void JoinAhead()
+    {
+        ParallelWork work = _aheadWork!;
+        _aheadWork = null;
+        try
+        {
+            work.Join();
+        }
+        catch (Exception exception)
+        {
+            // Not a chunk error (those are kept per slot): the batch is lost, so the stream cannot go on
+            _failure = exception;
+            throw;
+        }
+
+        (_slots, _ahead) = (_ahead, _slots);
+        _slot = 0;
+        _outputStart = 0;
     }
 
     /// <summary>Reads the length of a data chunk's uncompressed data, validating it.</summary>
@@ -425,7 +471,8 @@ internal sealed class SnappyStreamDecompressor : IDisposable
     /// <summary>Returns the free space to read more input into, compacting the buffer first if needed.</summary>
     public Memory<byte> GetInputBuffer()
     {
-        // SnappyStream checks for disposal before calling
+        // SnappyStream checks for disposal before calling, and calls only after a read returned 0, so no batch is
+        // decoding from the buffer
         byte[] input = _input!;
 
         if (_inputStart == _inputEnd)
@@ -464,14 +511,64 @@ internal sealed class SnappyStreamDecompressor : IDisposable
 
     public void Dispose()
     {
-        // Called once, by SnappyStream
+        // Called once, by SnappyStream. A batch is still decoding only after a read threw: wait for it before the
+        // buffers go back to the pool
+        _aheadWork?.Abandon();
+        _aheadWork = null;
+
         ArrayPool<byte>.Shared.Return(_input!);
         _input = null;
+        _slots.Dispose();
+        _ahead.Dispose();
+    }
 
-        if (_output is not null)
+    /// <summary>A batch of decoded chunks: one slot of up to 64KB per chunk, with its length or error.</summary>
+    private sealed class SlotSet(int capacity)
+    {
+        public byte[]? Buffer;
+        public readonly int[] Lengths = new int[capacity];
+        public readonly Exception?[] Errors = new Exception?[capacity];
+        public readonly int[] Offsets = new int[capacity];
+        public int Count;
+
+        public byte[] Output => Buffer!;
+
+        public byte[] EnsureOutput() => Buffer ??= ArrayPool<byte>.Shared.Rent(capacity * StreamFormat.MaxChunkDataLength);
+
+        /// <summary>The worker body decoding chunk i of <paramref name="input"/> (at Offsets[i]) into slot i.</summary>
+        public Action<int> Decode(byte[] input)
         {
-            ArrayPool<byte>.Shared.Return(_output);
-            _output = null;
+            byte[] output = Buffer!;
+            int[] offsets = Offsets;
+            int[] lengths = Lengths;
+            Exception?[] errors = Errors;
+            return i =>
+            {
+                int offset = offsets[i];
+                uint header = BinaryPrimitives.ReadUInt32LittleEndian(input.AsSpan(offset));
+                ReadOnlySpan<byte> chunk = input.AsSpan(offset + StreamFormat.ChunkHeaderLength, (int)(header >> 8));
+                try
+                {
+                    int length = GetChunkDataLength((byte)header, chunk, out int headerLength);
+                    DecodeChunk((byte)header, chunk, headerLength, output.AsSpan(i * StreamFormat.MaxChunkDataLength, length));
+                    lengths[i] = length;
+                    errors[i] = null;
+                }
+                catch (InvalidDataException exception)
+                {
+                    lengths[i] = 0;
+                    errors[i] = exception;
+                }
+            };
+        }
+
+        public void Dispose()
+        {
+            if (Buffer is not null)
+            {
+                ArrayPool<byte>.Shared.Return(Buffer);
+                Buffer = null;
+            }
         }
     }
 }

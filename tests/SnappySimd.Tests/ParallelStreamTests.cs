@@ -347,4 +347,166 @@ public class ParallelStreamTests
     {
         await Assert.That(() => new SnappyStream(new MemoryStream(), CompressionMode.Compress, false, null!)).Throws<ArgumentNullException>();
     }
+
+    [Test]
+    [Arguments(3)]
+    [Arguments(16)]
+    public async Task Write_SizesAroundBatchBoundaries(int threads)
+    {
+        // A batch is 4 chunks per thread; its last part is compressed while the previous batch is written
+        int batch = threads * 4 * 65536;
+        byte[] input = Repeat(TestData.Load("json_api.json"), (3 * batch) + 65536 + 1);
+        byte[] expected = await Compress(input, 1, WritePattern.OneWrite);
+
+        foreach (int[] sizes in new[] { new[] { batch }, [batch - 1], [batch + 1], [batch + 65536], [batch, batch + 1, 65535], [65536, batch * 2 + 65537] })
+        {
+            using var output = new MemoryStream();
+            using (var compressor = new SnappyStream(output, CompressionMode.Compress, leaveOpen: true, Options(threads)))
+            {
+                int position = 0;
+                foreach (int size in sizes)
+                {
+                    compressor.Write(input, position, size);
+                    position += size;
+                }
+
+                compressor.Write(input, position, input.Length - position);
+            }
+
+            await Assert.That(TestData.Same(expected, output.ToArray())).IsTrue();
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Write_ThrowingStream_PropagatesAndDisposes(bool async)
+    {
+        // The stream fails while a batch is compressing in the background: the batch is stopped before the
+        // exception leaves, and Dispose returns the buffers without waiting for a flush that cannot succeed
+        byte[] input = Repeat(TestData.Load("json_api.json"), 8 << 20);
+        var output = new ThrowingStream(1 << 20);
+        var compressor = new SnappyStream(output, CompressionMode.Compress, leaveOpen: true, Options(4));
+
+        Exception? first = null;
+        Exception? second = null;
+        try
+        {
+            if (async)
+            {
+                await compressor.WriteAsync(input);
+            }
+            else
+            {
+                compressor.Write(input);
+            }
+        }
+        catch (Exception exception)
+        {
+            first = exception;
+        }
+
+        try
+        {
+            // Nothing was written successfully, so disposing does not flush (and does not fail again)
+            if (async)
+            {
+                await compressor.DisposeAsync();
+            }
+            else
+            {
+                compressor.Dispose();
+            }
+        }
+        catch (Exception exception)
+        {
+            second = exception;
+        }
+
+        await Assert.That(first?.GetType()).IsEqualTo(typeof(IOException));
+        await Assert.That(second).IsNull();
+        await Assert.That(() => compressor.Write(input, 0, 1)).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
+    [Arguments(1000)]
+    [Arguments(100_000)]
+    public async Task ParallelRead_CorruptChunkInBatchDecodedAhead_SameBytesBeforeTheError(int readSize)
+    {
+        // With 4 threads a batch is 8 chunks: chunk 20 is in a batch decoded in the background while the
+        // previous one is served
+        byte[] input = Repeat(TestData.Load("json_api.json"), 2_000_000);
+        byte[] compressed = await Compress(input, 1, WritePattern.OneWrite);
+
+        int position = StreamFormatHeaderLength;
+        for (int chunk = 0; chunk < 20; chunk++)
+        {
+            position += 4 + (compressed[position + 1] | (compressed[position + 2] << 8) | (compressed[position + 3] << 16));
+        }
+
+        compressed[position + 4] ^= 0xFF;
+
+        // Bytes copied by the read that hits the bad chunk are lost with the exception, so allow one read less
+        // (the sequential path's reads are aligned differently after its smaller input buffer refills)
+        int parallel = ReadUntilError(compressed, 4, readSize);
+        await Assert.That(parallel).IsGreaterThanOrEqualTo((20 * 65536) - readSize);
+        await Assert.That(parallel).IsLessThanOrEqualTo(20 * 65536);
+    }
+
+    [Test]
+    public async Task ParallelRead_DisposeWithBatchDecodingAhead()
+    {
+        byte[] input = Repeat(TestData.Load("json_api.json"), 4_000_000);
+        byte[] compressed = await Compress(input, 1, WritePattern.OneWrite);
+
+        // A small read starts a batch in the background; disposing right away must wait for it
+        for (int i = 0; i < 20; i++)
+        {
+            var decompressor = new SnappyStream(new MemoryStream(compressed), CompressionMode.Decompress, leaveOpen: false, Options(8));
+            byte[] buffer = new byte[1000];
+            await Assert.That(decompressor.Read(buffer)).IsEqualTo(1000);
+            await Assert.That(TestData.Same(input.AsSpan(0, 1000).ToArray(), buffer)).IsTrue();
+            decompressor.Dispose();
+        }
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(4096)]
+    [Arguments(81920)]
+    public async Task ParallelRead_IncompressibleInput_ManyRefills(int readSize)
+    {
+        // Stored chunks fill the input buffer with few chunks per refill, so the batch decoded ahead drains and
+        // restarts many times
+        byte[] input = Repeat(TestData.Load("fireworks.jpeg"), 4_000_000);
+        byte[] compressed = await Compress(input, 1, WritePattern.OneWrite);
+
+        await Assert.That(TestData.Same(input, Decompress(compressed, 2, readSize))).IsTrue();
+        await Assert.That(TestData.Same(input, Decompress(compressed, 3, readSize))).IsTrue();
+    }
+
+    /// <summary>Accepts writes up to a limit, then throws.</summary>
+    private sealed class ThrowingStream(long limit) : Stream
+    {
+        private long _written;
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            _written += count;
+            if (_written > limit)
+            {
+                throw new IOException("Disk full.");
+            }
+        }
+    }
 }

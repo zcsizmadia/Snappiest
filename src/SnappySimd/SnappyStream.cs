@@ -74,7 +74,9 @@ public sealed class SnappyStream : Stream
     /// <exception cref="ArgumentException">Stream read/write capability doesn't match with <paramref name="mode"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Invalid <paramref name="mode"/>.</exception>
     /// <remarks>
-    /// Buffers grow with the number of threads: about 200KB of input and output per thread.
+    /// Buffers grow with the number of threads: about 900KB per thread when compressing (a batch of input and two
+    /// batches of output, so one is written while the next is compressed) and 600KB per thread when decompressing
+    /// (two batches of input and two sets of decoded chunks, one served while the next is decoded).
     /// </remarks>
     public SnappyStream(Stream stream, CompressionMode mode, bool leaveOpen, SnappyParallelOptions options)
         : this(options ?? throw new ArgumentNullException(nameof(options)), stream, mode, leaveOpen)

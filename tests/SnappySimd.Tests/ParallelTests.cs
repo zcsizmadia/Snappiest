@@ -68,6 +68,56 @@ public class ParallelTests
     }
 
     [Test]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(8)]
+    public async Task Compress_Repeated_IdenticalEveryTime(int threads)
+    {
+        // Fragments are packed into place by whichever worker finds them ready; repeat to shake out ordering races
+        byte[] input = Repeat(TestData.Load("json_api.json"), (4 << 20) + 999);
+        byte[] expected = Snappy.CompressToArray(input);
+        var options = new SnappyParallelOptions { MaxDegreeOfParallelism = threads, MinimumParallelLength = 0 };
+
+        byte[] large = new byte[Snappy.GetMaxCompressedLength(input.Length)];
+        byte[] exact = new byte[expected.Length];
+        for (int i = 0; i < 100; i++)
+        {
+            await Assert.That(Snappy.Compress(input, large, options)).IsEqualTo(expected.Length);
+            await Assert.That(TestData.Same(expected, large.AsSpan(0, expected.Length).ToArray())).IsTrue();
+
+            await Assert.That(Snappy.Compress(input, exact, options)).IsEqualTo(expected.Length);
+            await Assert.That(TestData.Same(expected, exact)).IsTrue();
+        }
+    }
+
+    [Test]
+    [Arguments(2)]
+    [Arguments(5)]
+    public async Task TryCompress_ExactOutput_MoreFragmentsThanScratchSlots(int threads)
+    {
+        // An exact-size output cannot hold the fragments' slots, so they go through a ring of scratch slots that
+        // fragments wait for (256 fragments, 4 slots per thread)
+        byte[] input = Repeat(TestData.Load("html_x_4"), (16 << 20) + 1);
+        byte[] expected = Snappy.CompressToArray(input);
+        var options = new SnappyParallelOptions { MaxDegreeOfParallelism = threads, MinimumParallelLength = 0 };
+
+        byte[] exact = new byte[expected.Length];
+        for (int i = 0; i < 5; i++)
+        {
+            await Assert.That(Snappy.TryCompress(input, exact, out int written, options)).IsTrue();
+            await Assert.That(written).IsEqualTo(expected.Length);
+            await Assert.That(TestData.Same(expected, exact)).IsTrue();
+        }
+
+        // Too small by one byte: the last fragment does not fit; by half: packing stops midway and the waiting
+        // fragments must not wait forever
+        await Assert.That(Snappy.TryCompress(input, new byte[expected.Length - 1], out _, options)).IsFalse();
+        await Assert.That(Snappy.TryCompress(input, new byte[expected.Length / 2], out _, options)).IsFalse();
+        await Assert.That(Snappy.TryCompress(input, exact, out _, options)).IsTrue();
+        await Assert.That(TestData.Same(expected, exact)).IsTrue();
+    }
+
+    [Test]
     public async Task TryCompress_OutputTooSmall_ReturnsFalse()
     {
         byte[] input = Repeat(TestData.Load("html"), 1 << 20);
