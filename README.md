@@ -153,7 +153,7 @@ AMD EPYC 7543 (Zen 3, AVX2), Ubuntu 22.04, BenchmarkDotNet 0.16 (medium job, in-
 physical core). Snappier 1.3.1 is the baseline; speedup is Snappier time / Snappiest time.
 Small-message results are the best of two runs for each library.
 
-Snappiest is at least as fast as Snappier in 119 of the 120 comparisons below (182 of 184 in the
+On the AMD EPYC host, Snappiest is at least as fast as Snappier in 119 of the 120 comparisons below (182 of 184 in the
 [full results](docs/benchmarks/README.md)). The exceptions are one html block processed over and over: compressing
 64 KB on .NET 10 (0.98x) and decompressing 16 KB on .NET 8 (0.99x); see the next paragraph.
 
@@ -311,7 +311,13 @@ Charts are .NET 10; the tables cover .NET 8 and .NET 10. .NET 11 results will be
 | json_api.json | 461 µs | 276 µs | **1.67x** | 457 µs | 254 µs | **1.80x** |
 | urls.10K | 491 µs | 265 µs | **1.85x** | 477 µs | 257 µs | **1.86x** |
 
-Reproduce with `scripts/bench-remote.sh` (or run `benchmarks/Snappiest.Benchmarks` directly with BenchmarkDotNet).
+**Second CPU.** The same comparison on an Intel Core i7-12800H (Windows 11, one process per file pinned to a P-core,
+`scripts/bench-local.ps1`) gives the same picture: Snappiest is faster on every file, compression by 1.0-1.7x and
+decompression by 1.1-2.7x (median of three or four runs on .NET 8 and .NET 10). Per-file results:
+[docs/benchmarks/i7-12800H.md](docs/benchmarks/i7-12800H.md).
+
+Reproduce with `scripts/bench-remote.sh` on a Linux host or `scripts/bench-local.ps1` on Windows (or run
+`benchmarks/Snappiest.Benchmarks` directly with BenchmarkDotNet).
 
 ## Building and testing
 

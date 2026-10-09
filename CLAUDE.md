@@ -44,9 +44,12 @@ The `dotnet` CLI is at `C:\Program Files\dotnet\dotnet.exe` (not on PATH in Clau
   Workflow: `.github/workflows/fuzz-coverage.yml` (weekly + manual, corpus in the Actions cache).
 - Benchmarks: **run on the remote host, not this machine** (the user works on this machine):
   `scripts/bench-remote.sh [host] [net10.0|net8.0] [Block,Stream,SmallBlock] [BenchmarkDotNet args]`.
-  Default host `bench-host.example` (2x EPYC 7543, 128 threads, AVX2, no AVX-512). The script syncs the repo, builds
+  The host comes from the first argument or `BENCH_HOST` (the reference host is 2x EPYC 7543, 128 threads, AVX2, no AVX-512). The script syncs the repo, builds
   once, and runs one in-process BenchmarkDotNet job per (class, file) pinned to its own physical core on NUMA node 1.
   `BENCH_JOB=short` for quick iteration (about +-10% noise), `medium` (default) for decisions.
+  `scripts/bench-local.ps1` (PowerShell 7) is the Windows equivalent for the user's own runs: sequential, one process
+  per file, each pinned to a P-core (an unpinned thread can land on an E-core, where Snappier compression is 3.5x
+  slower). Local numbers differ from the README's EPYC ones (Snappier is ~35% slower on the i7-12800H), so label them.
 - .NET 11 benchmarks are left out until .NET 11 is released (the README covers .NET 8 and .NET 10). To bring them
   back: add `net11.0` to the benchmark project's TargetFrameworks (with an SDK 11 condition while it is a preview),
   and in `scripts/bench-remote.sh` select the installed SDK 11 for `net11.0` (the synced global.json pins SDK 10).

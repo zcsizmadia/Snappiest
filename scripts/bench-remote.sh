@@ -3,7 +3,7 @@
 # physical core, then prints the combined result tables.
 #
 # Usage: scripts/bench-remote.sh [host] [framework] [classes] [extra BenchmarkDotNet args...]
-#   host       default bench-host.example
+#   host       ssh host to run on; "" or omitted uses $BENCH_HOST (one of the two is required)
 #   framework  net10.0 (default) or net8.0
 #   classes    comma separated: Block,Stream,SmallBlock,Messages,Corpus,Crc (default Block,Stream,SmallBlock,Corpus)
 # Env: BENCH_CORES   physical cores to use (default "33-63", NUMA node 1 on the EPYC host)
@@ -14,7 +14,8 @@
 #      BENCH_REMOTE_DIR  remote working copy (default ~/snappiest); use another for experiments
 set -euo pipefail
 
-HOST="${1:-bench-host.example}"
+HOST="${1:-${BENCH_HOST:-}}"
+[[ -n "$HOST" ]] || { echo "No host: pass it as the first argument or set BENCH_HOST." >&2; exit 1; }
 FRAMEWORK="${2:-net10.0}"
 CLASSES="${3:-Block,Stream,SmallBlock,Corpus}"
 shift $(( $# > 3 ? 3 : $# )) || true
