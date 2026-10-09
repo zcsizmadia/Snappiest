@@ -7,6 +7,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
 
     <PackageId>Snappiest</PackageId>
+    <VersionPrefix>0.9.0</VersionPrefix>
     <Description>
       High-performance Snappy compression for .NET 8+, using SIMD and hardware intrinsics on x64 and arm64.
       API-compatible with Snappier: switch the namespace from Snappier to Snappiest.
@@ -25,6 +26,7 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE" Pack="true" PackagePath="\" />
     <InternalsVisibleTo Include="Snappiest.Tests" />
     <InternalsVisibleTo Include="Snappiest.Benchmarks" />
   </ItemGroup>

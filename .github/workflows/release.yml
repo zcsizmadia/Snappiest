@@ -1,0 +1,106 @@
+name: Release
+
+# Publishes the Snappiest package to nuget.org with trusted publishing (no API key stored in GitHub) and creates the
+# GitHub release. Cut a release by pushing a tag: git tag v0.9.0 && git push origin v0.9.0
+# Run manually (workflow_dispatch) to test the pack step only; nothing is published without a v* tag.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  pack:
+    name: Pack
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - name: Work out the version
+        id: version
+        run: |
+          prefix="$(dotnet msbuild src/Snappiest/Snappiest.csproj -getProperty:VersionPrefix)"
+          if [[ -z "$prefix" ]]; then echo "VersionPrefix is not set in Snappiest.csproj" >&2; exit 1; fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ "${version%%-*}" != "$prefix" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match VersionPrefix $prefix in src/Snappiest/Snappiest.csproj" >&2
+              exit 1
+            fi
+          else
+            version="$prefix-ci.$GITHUB_RUN_NUMBER"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Packing $version"
+      - name: Pack
+        run: >
+          dotnet pack src/Snappiest -c Release -o artifacts
+          -p:Version=${{ steps.version.outputs.version }} -p:ContinuousIntegrationBuild=true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish to nuget.org
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: pack
+    runs-on: ubuntu-latest
+    # Create this environment in the repository settings; add required reviewers there to approve each release.
+    environment: nuget
+    permissions:
+      id-token: write # lets NuGet/login exchange the workflow's OIDC token for a short-lived API key
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: artifacts
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      - name: Get a short-lived nuget.org API key
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }} # the nuget.org profile name that owns the trusted publishing policy
+      - name: Push
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: >
+          dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY"
+          --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+  github-release:
+    name: GitHub release
+    needs: [pack, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: artifacts
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.pack.outputs.version }}
+        run: |
+          flags=()
+          if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" \
+            --title "Snappiest $VERSION" --generate-notes "${flags[@]}"

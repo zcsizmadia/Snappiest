@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 jobs:
   test:
@@ -27,3 +28,19 @@ jobs:
             8.0.x
             10.0.x
       - run: dotnet test --project tests/Snappiest.Tests -c Release
+
+  pack:
+    name: Pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - run: dotnet pack src/Snappiest -c Release -o artifacts -p:ContinuousIntegrationBuild=true
+      - name: Package contents
+        run: |
+          ls -l artifacts
+          unzip -l artifacts/*.nupkg | grep -E "lib/|README|LICENSE|nuspec"
