@@ -103,4 +103,4 @@ jobs:
           flags=()
           if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" artifacts/* --repo "$GITHUB_REPOSITORY" \
-            --title "Snappiest $VERSION" --generate-notes "${flags[@]}"
+            --title "$GITHUB_REF_NAME" --generate-notes "${flags[@]}"
