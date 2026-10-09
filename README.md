@@ -42,7 +42,7 @@ compressed bytes (see below). If you need .NET Framework or .NET Standard suppor
 
 ```diff
 - <PackageReference Include="Snappier" Version="1.3.1" />
-+ <PackageReference Include="Snappiest" Version="1.0.0" />
++ <PackageReference Include="Snappiest" Version="0.9.0" />
 ```
 
 ```diff
