@@ -1,7 +1,7 @@
 # Snappiest
 
 [![CI](https://github.com/zcsizmadia/Snappiest/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zcsizmadia/Snappiest/actions/workflows/ci.yml)
-[![NuGet](.github/badges/nuget.svg)](https://www.nuget.org/packages/Snappiest)
+[![NuGet](https://img.shields.io/nuget/v/Snappiest?logo=nuget&label=nuget)](https://www.nuget.org/packages/Snappiest)
 [![.NET 8.0 | 10.0](.github/badges/dotnet.svg)](https://dotnet.microsoft.com/download)
 [![License: BSD-3-Clause](.github/badges/license.svg)](LICENSE)
 
