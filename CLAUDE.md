@@ -23,7 +23,11 @@ High-performance Snappy (raw block + framing format) for .NET 8+, using SIMD and
   `DecompressBranchless`), `Internal/BlockCompressor.cs` (`CompressFragment`), `Internal/SimdCopy.cs`, `Internal/Crc32C.cs`.
 - `tests/Snappiest.Tests/` TUnit tests, including interop with the real Snappier package and guard-page tests.
 - `benchmarks/Snappiest.Benchmarks/` BenchmarkDotNet, Snappier as the baseline.
-- `testdata/` shared corpus (see its README for provenance).
+- `testdata/` shared corpus (see its README for provenance). Its CRLF and no-final-newline files are intentional
+  (`-text` in `.gitattributes`: tests compare bytes).
+- `scripts/`: benchmark runners and generators (`bench-remote.sh`, `bench-local.ps1`, `bench-table.mjs`,
+  `bench-charts.mjs`), `coverage.sh`, `fuzz.sh`, and `make-badge.mjs` (writes the static badges in `.github/badges/`,
+  e.g. `node scripts/make-badge.mjs .NET "8.0 | 10.0" "#512bd4" .github/badges/dotnet.svg`).
 
 ## Commands
 
