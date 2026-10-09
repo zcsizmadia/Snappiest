@@ -30,6 +30,10 @@ High-performance Snappy (raw block + framing format) for .NET 8+, using SIMD and
 The `dotnet` CLI is at `C:\Program Files\dotnet\dotnet.exe` (not on PATH in Claude Code shells).
 
 - Build: `dotnet build -c Release`
+- Releases: `docs/releasing.md`. Bump `<VersionPrefix>` in `src/Snappiest/Snappiest.csproj` through a PR, then push a
+  `v<version>` tag; `.github/workflows/release.yml` publishes to nuget.org (trusted publishing) and creates the GitHub
+  release.
+- Work on a branch and open a PR; don't commit straight to `main`.
 - Tests: `dotnet test --project tests/Snappiest.Tests -c Release`
 - Coverage across CPU features: `scripts/coverage.sh` (merges default, `DOTNET_EnableAVX2=0`, `DOTNET_EnableHWIntrinsic=0`)
 - Coverage-guided fuzzing (SharpFuzz + libFuzzer, Linux only; `tests/Snappiest.Fuzz`, targets `block`, `stream`,
